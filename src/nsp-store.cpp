@@ -122,7 +122,7 @@ void Store::Append(int64_t epoch, const std::vector<Cell> &cells) {
         }
     } else {
         slot = (uint32_t)((cur + 1) % (int64_t)h->slot_count);
-        meta[slot].epoch = epoch;
+        meta[slot].epoch = (epoch / (int64_t)h->slot_duration) * (int64_t)h->slot_duration;
         for (uint32_t s = 0; s < h->series_capacity; ++s) {
             Cell &dst = grid[cell_index(slot, s, h->series_capacity)];
             dst = (s < (uint32_t)cells.size()) ? cells[s] : Cell{};

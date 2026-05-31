@@ -106,3 +106,32 @@ TEST_CASE("store: geometry mismatch recreates and discards data") {
     s2.Close();
     ::unlink(path.c_str());
 }
+
+TEST_CASE("store: appends in the same slot window consolidate in place") {
+    using namespace nsp;
+    auto path = tmp_store_path("cons");
+    Store s; std::string err;
+    REQUIRE(s.Open(path, 100, 4, 4, err));   // 100s slots
+    uint32_t idx; REQUIRE(s.SeriesIndex("a", idx));
+
+    std::vector<Cell> c(4, Cell{});
+    c[0] = Cell{100, 50, 1, 1, 1};
+    s.Append(1000, c);                       // window 1000/100 = 10
+    c[0] = Cell{200, 80, 3, 2, 1};
+    s.Append(1050, c);                       // same window (1050/100 = 10) -> consolidate
+
+    std::vector<int64_t> ep; std::vector<Cell> out;
+    s.ReadSeries("a", ep, out);
+    REQUIRE(out.size() == 4);
+    // Exactly one slot populated; it holds the SUM of both writes.
+    int populated = 0; size_t pi = 0;
+    for (size_t i = 0; i < ep.size(); ++i) if (ep[i] != 0) { populated++; pi = i; }
+    CHECK(populated == 1);
+    CHECK(out[pi].rx_bytes == 300);          // 100 + 200
+    CHECK(out[pi].tx_bytes == 130);          // 50 + 80
+    CHECK(out[pi].rx_pkts == 4);             // 1 + 3
+    CHECK(out[pi].flows == 2);               // 1 + 1
+    CHECK(ep[pi] == 1000);                   // stored epoch = slot-window floor
+    s.Close();
+    ::unlink(path.c_str());
+}
