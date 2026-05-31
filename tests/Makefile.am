@@ -15,9 +15,11 @@ unit_tests_SOURCES = \
     unit/test_store.cpp \
     unit/test_accum.cpp \
     unit/test_config.cpp \
+    unit/test_query.cpp \
     $(top_srcdir)/src/nsp-store.cpp \
     $(top_srcdir)/src/nsp-accum.cpp \
-    $(top_srcdir)/src/nsp-config.cpp
+    $(top_srcdir)/src/nsp-config.cpp \
+    $(top_srcdir)/src/nsp-query-build.cpp
 
 unit_tests_LDADD = $(LIBNETIFYD_LIBS)
 
