@@ -13,7 +13,9 @@ check_PROGRAMS = unit_tests
 unit_tests_SOURCES = \
     unit/test_smoke.cpp \
     unit/test_store.cpp \
-    $(top_srcdir)/src/nsp-store.cpp
+    unit/test_accum.cpp \
+    $(top_srcdir)/src/nsp-store.cpp \
+    $(top_srcdir)/src/nsp-accum.cpp
 
 unit_tests_LDADD = $(LIBNETIFYD_LIBS)
 
