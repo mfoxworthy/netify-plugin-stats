@@ -11,7 +11,9 @@ check_PROGRAMS = unit_tests
 # Test and core sources are added incrementally per task. Task 2 starts with
 # the doctest main + smoke test only.
 unit_tests_SOURCES = \
-    unit/test_smoke.cpp
+    unit/test_smoke.cpp \
+    unit/test_store.cpp \
+    $(top_srcdir)/src/nsp-store.cpp
 
 unit_tests_LDADD = $(LIBNETIFYD_LIBS)
 
