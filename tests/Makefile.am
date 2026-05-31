@@ -1,0 +1,18 @@
+AUTOMAKE_OPTIONS = foreign subdir-objects
+
+AM_CPPFLAGS = -D_GNU_SOURCE \
+    -DNSP_FIXTURE_DIR=\"$(abs_top_srcdir)/tests/unit/fixtures\" \
+    -I$(top_srcdir)/include \
+    -I$(top_srcdir)/tests \
+    $(LIBNETIFYD_CFLAGS)
+
+check_PROGRAMS = unit_tests
+
+# Test and core sources are added incrementally per task. Task 2 starts with
+# the doctest main + smoke test only.
+unit_tests_SOURCES = \
+    unit/test_smoke.cpp
+
+unit_tests_LDADD = $(LIBNETIFYD_LIBS)
+
+TESTS = unit_tests
