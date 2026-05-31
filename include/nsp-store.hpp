@@ -56,4 +56,57 @@ inline size_t file_size(uint32_t cap, uint32_t slots) {
     return cells_offset(cap, slots) + (size_t)slots * cap * sizeof(Cell);
 }
 
+// A memory-mapped fixed-size ring buffer for one (dimension, tier) file.
+class Store {
+public:
+    Store() = default;
+    ~Store();
+    Store(const Store &) = delete;
+    Store &operator=(const Store &) = delete;
+
+    // Open `path`, (re)creating it if missing or if geometry/magic/version
+    // mismatch the requested (slot_duration, slot_count, series_capacity).
+    // On geometry mismatch the file is recreated and old data discarded.
+    // Returns false on unrecoverable I/O error (err populated).
+    bool Open(const std::string &path, uint32_t slot_duration,
+              uint32_t slot_count, uint32_t series_capacity, std::string &err);
+
+    void Close();
+
+    bool ok() const { return base_ != nullptr; }
+
+    // Resolve a series name to a stable column index, assigning a new column
+    // on first use. Returns false if capacity is exhausted.
+    bool SeriesIndex(const std::string &name, uint32_t &idx);
+
+    // Write one slot's worth of cells at time `epoch`. `cells` is indexed by
+    // series column; entries beyond series_count are ignored. Advances the
+    // ring cursor (O(1)). If `epoch` falls in the same slot window as the
+    // current newest slot, the cell is summed into it (consolidation helper).
+    void Append(int64_t epoch, const std::vector<Cell> &cells);
+
+    // Read all slots oldest->newest for the named series into aligned arrays.
+    // `epochs[i]` is the slot start (0 if that slot was never written);
+    // `cells[i]` is the metric cell (zeroed for empty slots).
+    void ReadSeries(const std::string &name,
+                    std::vector<int64_t> &epochs,
+                    std::vector<Cell> &cells) const;
+
+    // Accessors for the query layer.
+    uint32_t slot_duration() const;
+    uint32_t slot_count() const;
+    std::vector<std::string> series_names() const;
+
+private:
+    Header *header() const { return reinterpret_cast<Header *>(base_); }
+    char *names_base() const { return static_cast<char *>(base_) + names_offset(); }
+    SlotMeta *slotmeta_base() const;
+    Cell *cells_base() const;
+    bool MapFile(const std::string &path, size_t size, std::string &err, bool create);
+
+    void *base_ = nullptr;
+    size_t mapped_size_ = 0;
+    int fd_ = -1;
+};
+
 } // namespace nsp
