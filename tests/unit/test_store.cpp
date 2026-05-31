@@ -1,5 +1,6 @@
 #include "doctest.h"
 #include "nsp-store.hpp"
+#include <sys/stat.h>
 
 TEST_CASE("store: file_size is fixed and matches layout") {
     using namespace nsp;
@@ -134,4 +135,34 @@ TEST_CASE("store: appends in the same slot window consolidate in place") {
     CHECK(ep[pi] == 1000);                   // stored epoch = slot-window floor
     s.Close();
     ::unlink(path.c_str());
+}
+
+TEST_CASE("tierset: tier1 consolidates multiple tier0 samples") {
+    using namespace nsp;
+    std::string dir = "/tmp/nsp_tierset_" + std::to_string(getpid());
+    ::mkdir(dir.c_str(), 0755);
+    TierSet ts; std::string err;
+    std::vector<TierSpec> tiers = { {10, 6}, {30, 4} };  // t0=10s, t1=30s
+    REQUIRE(ts.Open(dir, "apps", tiers, 4, err));
+
+    auto sample = [&](int64_t epoch, uint64_t tx) {
+        std::vector<NamedMetrics> s = { { "netflix", Metrics{0, tx, 0, 0, 1} } };
+        ts.AppendSample(epoch, s);
+    };
+    sample(1000, 100);   // t1 window [990,1020) since 1000/30*30=990
+    sample(1010, 100);   // same t1 window
+    sample(1020, 100);   // new t1 window [1020,1050)
+
+    std::vector<int64_t> ep; std::vector<Cell> out;
+    ts.ReadSeries(1, "netflix", ep, out);   // tier 1
+    // Two t1 slots written: first sums two samples (200, 2 flows), second 100.
+    uint64_t total = 0; uint32_t flows = 0;
+    for (size_t i = 0; i < out.size(); ++i) { total += out[i].tx_bytes; flows += out[i].flows; }
+    CHECK(total == 300);
+    CHECK(flows == 3);
+    // The consolidated slot holds the summed value.
+    bool saw_200 = false;
+    for (auto &c : out) if (c.tx_bytes == 200) saw_200 = true;
+    CHECK(saw_200);
+    ts.Close();
 }

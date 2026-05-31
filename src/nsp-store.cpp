@@ -174,4 +174,46 @@ std::vector<std::string> Store::series_names() const {
     return out;
 }
 
+bool TierSet::Open(const std::string &dir, const std::string &dim,
+                   const std::vector<TierSpec> &tiers, uint32_t series_capacity,
+                   std::string &err) {
+    Close();
+    for (size_t i = 0; i < tiers.size(); ++i) {
+        auto s = std::make_unique<Store>();
+        std::string path = dir + "/" + dim + ".t" + std::to_string(i) + ".rrb";
+        if (!s->Open(path, tiers[i].step, tiers[i].count, series_capacity, err))
+            return false;
+        stores_.push_back(std::move(s));
+    }
+    return true;
+}
+
+void TierSet::Close() { stores_.clear(); }
+
+void TierSet::AppendSample(int64_t epoch, const std::vector<NamedMetrics> &series) {
+    for (auto &sp : stores_) {
+        // Assign columns + build a cell vector for this tier.
+        // First pass: ensure all series have indices assigned and find max idx.
+        uint32_t max_idx = 0;
+        std::vector<std::pair<uint32_t, const Metrics *>> placed;
+        for (auto &nm : series) {
+            uint32_t idx;
+            if (!sp->SeriesIndex(nm.name, idx)) continue;  // capacity exhausted
+            if (idx + 1 > max_idx) max_idx = idx + 1;
+            placed.emplace_back(idx, &nm.m);
+        }
+        std::vector<Cell> cells(max_idx, Cell{});
+        for (auto &p : placed) {
+            const Metrics &m = *p.second;
+            cells[p.first] = Cell{ m.rx_bytes, m.tx_bytes, m.rx_pkts, m.tx_pkts, m.flows };
+        }
+        sp->Append(epoch, cells);
+    }
+}
+
+void TierSet::ReadSeries(size_t tier, const std::string &name,
+                         std::vector<int64_t> &epochs, std::vector<Cell> &cells) const {
+    stores_.at(tier)->ReadSeries(name, epochs, cells);
+}
+
 } // namespace nsp

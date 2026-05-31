@@ -3,8 +3,11 @@
 
 #include <cstdint>
 #include <ctime>
+#include <memory>
 #include <string>
 #include <vector>
+
+#include "nsp-accum.hpp"
 
 namespace nsp {
 
@@ -107,6 +110,32 @@ private:
     void *base_ = nullptr;
     size_t mapped_size_ = 0;
     int fd_ = -1;
+};
+
+struct TierSpec { uint32_t step; uint32_t count; };
+
+// One dimension ("apps"/"cats"), one Store per tier.
+class TierSet {
+public:
+    // dir/<dim>.t<n>.rrb per tier. Recreates files on geometry mismatch.
+    bool Open(const std::string &dir, const std::string &dim,
+              const std::vector<TierSpec> &tiers, uint32_t series_capacity,
+              std::string &err);
+    void Close();
+
+    // Append one interval sample (already top-N-reduced) at `epoch` to every
+    // tier; each tier consolidates within its own slot window.
+    void AppendSample(int64_t epoch, const std::vector<NamedMetrics> &series);
+
+    // Read one tier (by index) for one series into the query arrays.
+    void ReadSeries(size_t tier, const std::string &name,
+                    std::vector<int64_t> &epochs, std::vector<Cell> &cells) const;
+
+    Store &tier(size_t i) { return *stores_.at(i); }
+    size_t tier_count() const { return stores_.size(); }
+
+private:
+    std::vector<std::unique_ptr<Store>> stores_;
 };
 
 } // namespace nsp
