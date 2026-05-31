@@ -24,3 +24,21 @@ unit_tests_SOURCES = \
 unit_tests_LDADD = $(LIBNETIFYD_LIBS)
 
 TESTS = unit_tests
+
+check_PROGRAMS += seed_store query_driver
+
+seed_store_SOURCES = \
+    integration/seed_store.cpp \
+    $(top_srcdir)/src/nsp-store.cpp \
+    $(top_srcdir)/src/nsp-accum.cpp
+seed_store_LDADD = $(LIBNETIFYD_LIBS)
+
+query_driver_SOURCES = \
+    integration/query_driver.cpp \
+    $(top_srcdir)/src/nsp-store.cpp \
+    $(top_srcdir)/src/nsp-accum.cpp \
+    $(top_srcdir)/src/nsp-query-build.cpp
+query_driver_LDADD = $(LIBNETIFYD_LIBS)
+
+TESTS += integration/test_query.sh
+AM_TESTS_ENVIRONMENT = SEED='$(abs_builddir)/seed_store'; export SEED; QUERY='$(abs_builddir)/query_driver'; export QUERY;
