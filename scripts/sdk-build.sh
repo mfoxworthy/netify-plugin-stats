@@ -48,7 +48,7 @@ ssh -o BatchMode=yes "$HOST" "
   mkdir -p '$PKG_DIR/srctree/m4' '$PKG_DIR/srctree/automake'
   cd '$SDK_DIR'
   echo '>> make package/netify-plugin-stats/compile'
-  make package/netify-plugin-stats/{clean,compile} V=s ${NSP_MAKE_JOBS:+-j$NSP_MAKE_JOBS} 2>&1 | tail -60
+  timeout ${NSP_BUILD_TIMEOUT:-600} make package/netify-plugin-stats/{clean,compile} V=s ${NSP_MAKE_JOBS:+-j$NSP_MAKE_JOBS} 2>&1 | tail -60
   echo '>> built .ipk(s):'
-  find '$SDK_DIR/bin' -name 'netify-plugin-stats*.ipk' 2>/dev/null
+  find '$SDK_DIR/bin' -name 'netify-plugin-stats*.apk' -o -name 'netify-plugin-stats*.ipk' 2>/dev/null
 "

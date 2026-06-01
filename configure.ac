@@ -5,6 +5,10 @@ AC_INIT([netify-plugin-stats],
 AC_CONFIG_AUX_DIR([automake])
 AC_CONFIG_MACRO_DIRS([m4])
 AM_INIT_AUTOMAKE([foreign subdir-objects 1.13])
+# Never regenerate the build system during `make` (rsync'd mtimes in the
+# OpenWRT SDK srctree would otherwise trigger autoreconf/automake rebuild
+# rules and can hang the cross-build).
+AM_MAINTAINER_MODE([disable])
 AC_CONFIG_HEADERS([config.h])
 
 AC_PROG_CXX
