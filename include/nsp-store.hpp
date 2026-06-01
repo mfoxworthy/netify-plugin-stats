@@ -125,7 +125,10 @@ public:
 
     // Append one interval sample (already top-N-reduced) at `epoch` to every
     // tier; each tier consolidates within its own slot window.
-    void AppendSample(int64_t epoch, const std::vector<NamedMetrics> &series);
+    // Returns the total number of series that could not be indexed (capacity
+    // exhausted) across all tiers — a non-zero value means silent truncation
+    // occurred and the caller should surface it as an observable drop counter.
+    size_t AppendSample(int64_t epoch, const std::vector<NamedMetrics> &series);
 
     // Read one tier (by index) for one series into the query arrays.
     void ReadSeries(size_t tier, const std::string &name,

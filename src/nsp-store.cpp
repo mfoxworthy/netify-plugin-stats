@@ -190,7 +190,8 @@ bool TierSet::Open(const std::string &dir, const std::string &dim,
 
 void TierSet::Close() { stores_.clear(); }
 
-void TierSet::AppendSample(int64_t epoch, const std::vector<NamedMetrics> &series) {
+size_t TierSet::AppendSample(int64_t epoch, const std::vector<NamedMetrics> &series) {
+    size_t total_dropped = 0;
     for (auto &sp : stores_) {
         // Assign columns + build a cell vector for this tier.
         // First pass: ensure all series have indices assigned and find max idx.
@@ -198,7 +199,10 @@ void TierSet::AppendSample(int64_t epoch, const std::vector<NamedMetrics> &serie
         std::vector<std::pair<uint32_t, const Metrics *>> placed;
         for (auto &nm : series) {
             uint32_t idx;
-            if (!sp->SeriesIndex(nm.name, idx)) continue;  // capacity exhausted
+            if (!sp->SeriesIndex(nm.name, idx)) {
+                total_dropped++;  // capacity exhausted — series silently dropped
+                continue;
+            }
             if (idx + 1 > max_idx) max_idx = idx + 1;
             placed.emplace_back(idx, &nm.m);
         }
@@ -209,6 +213,7 @@ void TierSet::AppendSample(int64_t epoch, const std::vector<NamedMetrics> &serie
         }
         sp->Append(epoch, cells);
     }
+    return total_dropped;
 }
 
 void TierSet::ReadSeries(size_t tier, const std::string &name,

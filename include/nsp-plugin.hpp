@@ -39,11 +39,12 @@ protected:
 
     nsp::TierSet apps_store;
     nsp::TierSet cats_store;
-    bool store_ok = false;
+    std::atomic<bool> store_ok{false};
 
     std::atomic<uint64_t> stat_events{0};
     std::atomic<uint64_t> stat_samples{0};
     std::atomic<uint64_t> stat_store_errors{0};
+    std::atomic<uint64_t> stat_series_dropped{0};
 
     void Reload();
     void OpenStores();

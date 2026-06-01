@@ -134,8 +134,8 @@ void *nspPlugin::Entry(void) {
         int64_t epoch = (int64_t)time(nullptr);
         if (store_ok) {
             lock_guard<mutex> lg(config_mutex);
-            apps_store.AppendSample(epoch, snap.apps);
-            cats_store.AppendSample(epoch, snap.cats);
+            stat_series_dropped += apps_store.AppendSample(epoch, snap.apps);
+            stat_series_dropped += cats_store.AppendSample(epoch, snap.cats);
         }
         stat_samples++;
     }
@@ -151,9 +151,10 @@ void nspPlugin::GetStatus(json &status) {
     status["events"] = stat_events.load();
     status["samples"] = stat_samples.load();
     status["store_errors"] = stat_store_errors.load();
+    status["series_dropped"] = stat_series_dropped.load();
     lock_guard<mutex> lg(config_mutex);
     status["store_path"] = config.store_path;
-    status["store_ok"] = store_ok;
+    status["store_ok"] = store_ok.load();
 }
 
 ndPluginInit(nspPlugin);
