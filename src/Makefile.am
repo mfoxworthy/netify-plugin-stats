@@ -19,17 +19,19 @@ libnspcore_la_SOURCES = \
     nsp-query-build.cpp \
     nsp-config.cpp \
     nsp-config-uci.cpp
-libnspcore_la_LIBADD = $(LIBNETIFYD_LIBS)
+# nsp-config-uci.cpp reads UCI via libuci directly (libnetifyd does not export
+# its internal ndUci), so the core lib and both consumers link -luci.
+libnspcore_la_LIBADD = $(LIBNETIFYD_LIBS) -luci
 
 # The Netify Agent processor plugin (loaded by netifyd from /usr/lib).
 lib_LTLIBRARIES = netify-plugin-stats.la
 netify_plugin_stats_la_SOURCES = nsp-plugin.cpp
 netify_plugin_stats_la_LDFLAGS = -module -avoid-version -shared
-netify_plugin_stats_la_LIBADD = libnspcore.la $(LIBNETIFYD_LIBS)
+netify_plugin_stats_la_LIBADD = libnspcore.la $(LIBNETIFYD_LIBS) -luci
 
 # The query CLI (invoked by the rpcd backend).
 bin_PROGRAMS = netify-stats-query
 netify_stats_query_SOURCES = nsp-query.cpp
-netify_stats_query_LDADD = libnspcore.la $(LIBNETIFYD_LIBS)
+netify_stats_query_LDADD = libnspcore.la $(LIBNETIFYD_LIBS) -luci
 
 endif # BUILD_PACKAGE

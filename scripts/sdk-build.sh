@@ -27,10 +27,25 @@ ssh -o BatchMode=yes "$HOST" "
   mkdir -p '$PKG_DIR'
   cp '$REMOTE_DIR/deploy/openwrt/Makefile' '$PKG_DIR/Makefile'
   cp -r '$REMOTE_DIR/deploy/openwrt/files' '$PKG_DIR/files'
-  # srctree = the buildable autotools source the package compiles.
+  # srctree = PRISTINE autotools source the package compiles. Exclude all
+  # build artifacts (especially host-arch *.o/*.lo/.libs from native test
+  # builds) and generated autotools files — PKG_FIXUP=autoreconf regenerates
+  # configure, and the cross-toolchain must compile every object fresh.
+  rm -rf '$PKG_DIR/srctree'
   mkdir -p '$PKG_DIR/srctree'
-  rsync -a --exclude '.git' --exclude 'deploy' --exclude 'scripts' \
+  rsync -a \
+        --exclude '.git' --exclude 'deploy' --exclude 'scripts' \
+        --exclude '*.o' --exclude '*.lo' --exclude '*.la' \
+        --exclude '.libs' --exclude '.deps' \
+        --exclude 'autom4te.cache' --exclude 'automake' --exclude 'm4' \
+        --exclude 'configure' --exclude 'config.h' --exclude 'config.h.in' \
+        --exclude 'config.status' --exclude 'config.log' --exclude 'libtool' \
+        --exclude 'ltmain.sh' --exclude 'stamp-h1' \
+        --exclude 'Makefile' --exclude 'Makefile.in' --exclude 'aclocal.m4' \
+        --exclude '*.trs' --exclude '*.log' \
         '$REMOTE_DIR'/ '$PKG_DIR/srctree'/
+  # autoreconf (PKG_FIXUP) expects the configured aux/macro dirs to exist.
+  mkdir -p '$PKG_DIR/srctree/m4' '$PKG_DIR/srctree/automake'
   cd '$SDK_DIR'
   echo '>> make package/netify-plugin-stats/compile'
   make package/netify-plugin-stats/{clean,compile} V=s ${NSP_MAKE_JOBS:+-j$NSP_MAKE_JOBS} 2>&1 | tail -60
