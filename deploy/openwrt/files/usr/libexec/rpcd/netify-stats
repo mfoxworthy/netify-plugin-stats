@@ -1,0 +1,27 @@
+#!/bin/sh
+# rpcd exec backend for netify-stats: wraps the netify-stats-query CLI as the
+# ubus object "luci.netify-stats" with a read-only "query" method.
+
+case "$1" in
+	list)
+		echo '{ "query": { "dimension": "apps", "metric": "rx_bytes", "range": "1h", "keys": [] } }'
+		;;
+	call)
+		case "$2" in
+			query)
+				read input
+				dim=$(echo "$input" | jsonfilter -e '@.dimension' 2>/dev/null)
+				metric=$(echo "$input" | jsonfilter -e '@.metric' 2>/dev/null)
+				range=$(echo "$input" | jsonfilter -e '@.range' 2>/dev/null)
+				[ -n "$dim" ] || dim=apps
+				[ -n "$metric" ] || metric=rx_bytes
+				[ -n "$range" ] || range=1h
+				/usr/bin/netify-stats-query \
+					--dimension="$dim" --metric="$metric" --range="$range"
+				;;
+			*)
+				echo '{ "error": "unknown method" }'
+				;;
+		esac
+		;;
+esac

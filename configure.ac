@@ -20,6 +20,15 @@ AC_ARG_ENABLE([tests],
     [enable_tests=$enableval], [enable_tests=yes])
 AM_CONDITIONAL([ENABLE_TESTS], [test "x$enable_tests" = "xyes"])
 
+# The plugin .so, query CLI, and shared core library link against the agent's
+# ndUci (which needs <uci.h>) and only build in a full target/SDK environment.
+# Default off so the native unit-test build (which compiles the pure sources
+# directly) does not require uci.h. The OpenWRT package passes --enable-package.
+AC_ARG_ENABLE([package],
+    [AS_HELP_STRING([--enable-package], [build the plugin .so and query CLI (needs libuci)])],
+    [enable_package=$enableval], [enable_package=no])
+AM_CONDITIONAL([BUILD_PACKAGE], [test "x$enable_package" = "xyes"])
+
 AC_CONFIG_FILES([
     Makefile
     src/Makefile

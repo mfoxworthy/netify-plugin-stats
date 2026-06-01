@@ -1,0 +1,16 @@
+config netify_stats 'global'
+	option store_path '/tmp/netify-stats'
+	option sample_interval '10'
+	option top_n_apps '50'
+
+config tier
+	option step '10'
+	option count '360'
+
+config tier
+	option step '60'
+	option count '1440'
+
+config tier
+	option step '300'
+	option count '8640'
