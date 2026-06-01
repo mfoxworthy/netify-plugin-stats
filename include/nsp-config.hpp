@@ -12,6 +12,7 @@ namespace nsp {
 
 struct Config {
     std::string store_path   = "/tmp/netify-stats";
+    std::string categories_path = "/etc/netify.d/netify-categories.json";
     unsigned    sample_interval = 10;   // seconds
     unsigned    top_n_apps   = 50;
     uint32_t    series_capacity_apps = 64;   // top_n + __other__ + headroom

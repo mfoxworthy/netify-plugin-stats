@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <ctime>
+#include <fstream>
 #include <thread>
 #include <string>
 #include <sys/stat.h>
@@ -43,6 +44,7 @@ void nspPlugin::Reload() {
         config = std::move(r.config);
     }
     OpenStores();
+    LoadCategoryNames(config.categories_path);
     nd_printf("%s: loaded config; store_path=%s top_n=%u interval=%us\n",
         tag.c_str(), config.store_path.c_str(), config.top_n_apps, config.sample_interval);
 }
@@ -65,11 +67,31 @@ uint64_t nspPlugin::FlowKey(const ndFlow::Ptr &flow) {
     return (uint64_t)flow->digest_lower;
 }
 
+void nspPlugin::LoadCategoryNames(const std::string &path) {
+    std::unordered_map<unsigned, std::string> names;
+    std::ifstream f(path);
+    if (f.is_open()) {
+        try {
+            auto j = json::parse(f);
+            for (auto it = j.at("application_tag_index").begin();
+                 it != j.at("application_tag_index").end(); ++it)
+                names[(unsigned)it.value()] = it.key();
+            nd_printf("%s: loaded %zu category names from %s\n",
+                tag.c_str(), names.size(), path.c_str());
+        } catch (const std::exception &e) {
+            nd_printf("%s: failed to parse %s: %s\n", tag.c_str(), path.c_str(), e.what());
+        }
+    } else {
+        nd_printf("%s: categories file not found: %s\n", tag.c_str(), path.c_str());
+    }
+    lock_guard<mutex> lg(config_mutex);
+    cat_names = std::move(names);
+}
+
 std::string nspPlugin::CategoryName(unsigned cat_id) {
-    // v0.1: numeric fallback. Real category tags require capturing the
-    // ndInstanceStatus->categories table at the UPDATE_INIT event and calling
-    // ndCategories::GetTag(Type::APP, id); left as a future enhancement.
-    return "cat-" + std::to_string(cat_id);
+    lock_guard<mutex> lg(config_mutex);
+    auto it = cat_names.find(cat_id);
+    return (it != cat_names.end()) ? it->second : ("cat-" + std::to_string(cat_id));
 }
 
 void nspPlugin::DispatchEvent(ndPlugin::Event event, void *) {

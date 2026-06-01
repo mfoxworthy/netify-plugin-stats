@@ -17,6 +17,7 @@ ConfigResult parseConfig(const UciMap &uci) {
 
     std::string v;
     if (get1(uci, "global.store_path", v)) c.store_path = v;
+    if (get1(uci, "global.categories_path", v)) c.categories_path = v;
     if (get1(uci, "global.sample_interval", v)) c.sample_interval = (unsigned)strtoul(v.c_str(), nullptr, 0);
     if (get1(uci, "global.top_n_apps", v)) c.top_n_apps = (unsigned)strtoul(v.c_str(), nullptr, 0);
     if (c.sample_interval == 0) { r.warnings.push_back("sample_interval=0 invalid; using 10"); c.sample_interval = 10; }

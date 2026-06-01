@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <unordered_map>
 
 #include <nd-plugin.hpp>
 #include <nd-flow.hpp>
@@ -48,6 +49,9 @@ protected:
 
     void Reload();
     void OpenStores();
+    void LoadCategoryNames(const std::string &path);
     static uint64_t FlowKey(const ndFlow::Ptr &flow);
     std::string CategoryName(unsigned cat_id);
+
+    std::unordered_map<unsigned, std::string> cat_names;
 };

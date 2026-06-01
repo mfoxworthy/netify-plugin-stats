@@ -7,6 +7,7 @@
 .deps/
 Makefile
 Makefile.in
+!deploy/openwrt/Makefile
 aclocal.m4
 autom4te.cache/
 config.h
