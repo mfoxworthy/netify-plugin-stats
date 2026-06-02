@@ -3,20 +3,21 @@
 #endif
 
 #include <chrono>
+#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <thread>
 #include <string>
 #include <sys/stat.h>
 
-#include <nd-util.hpp>
+#include <nd-util.h>
 
 #include "nsp-plugin.hpp"
 
 using namespace std;
 using json = nlohmann::json;
 
-// Recursive mkdir -p (the agent has no nd_mkdir helper).
+// Recursive mkdir -p.
 static void nsp_mkdir_p(const std::string &path) {
     std::string cur;
     for (size_t i = 0; i < path.size(); ++i) {
@@ -27,10 +28,8 @@ static void nsp_mkdir_p(const std::string &path) {
     }
 }
 
-nspPlugin::nspPlugin(const string &tag, const ndPlugin::Params &params)
-    : ndPluginProcessor(tag, params) {
-    auto i = params.find("conf_filename");
-    if (i != params.end()) conf_filename = i->second;
+nspPlugin::nspPlugin(const string &tag)
+    : ndPluginDetection(tag) {
     Reload();
 }
 
@@ -62,9 +61,11 @@ void nspPlugin::OpenStores() {
     }
 }
 
-// Stable per-flow key: the flow's xxh64 lower digest (set by ndFlow::Hash()).
-uint64_t nspPlugin::FlowKey(const ndFlow::Ptr &flow) {
-    return (uint64_t)flow->digest_lower;
+// Stable per-flow key: first 8 bytes of the SHA1 lower digest.
+uint64_t nspPlugin::FlowKey(ndFlow *flow) {
+    uint64_t key = 0;
+    memcpy(&key, flow->digest_lower, sizeof(key));
+    return key;
 }
 
 void nspPlugin::LoadCategoryNames(const std::string &path) {
@@ -94,35 +95,33 @@ std::string nspPlugin::CategoryName(unsigned cat_id) {
     return (it != cat_names.end()) ? it->second : ("cat-" + std::to_string(cat_id));
 }
 
-void nspPlugin::DispatchEvent(ndPlugin::Event event, void *) {
-    if (event == ndPlugin::Event::RELOAD) reload_pending = true;
+void nspPlugin::ProcessEvent(ndPluginEvent event, void *) {
+    if (event == ndPlugin::EVENT_RELOAD) reload_pending = true;
 }
 
-void nspPlugin::DispatchProcessorEvent(
-    ndPluginProcessor::Event event, ndFlow::Ptr &flow) {
-    if (event == ndPluginProcessor::Event::FLOW_EXPIRE) {
+void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
+    if (event == ndPluginDetection::EVENT_EXPIRING) {
         lock_guard<mutex> lg(accum_mutex);
         accum.ForgetFlow(FlowKey(flow));
         return;
     }
-    if (event != ndPluginProcessor::Event::DPI_UPDATE &&
-        event != ndPluginProcessor::Event::DPI_COMPLETE)
+    if (event != ndPluginDetection::EVENT_NEW &&
+        event != ndPluginDetection::EVENT_UPDATED)
         return;
 
     nsp::Accumulator::FlowSample s;
     s.flow_id  = FlowKey(flow);
     s.app_id   = (unsigned)flow->detected_application;
-    s.app_name = flow->detected_application_name.empty()
-        ? ("app-" + std::to_string(s.app_id)) : flow->detected_application_name;
+    s.app_name = (flow->detected_application_name != NULL && flow->detected_application_name[0] != '\0')
+        ? flow->detected_application_name
+        : ("app-" + std::to_string(s.app_id));
     s.cat_id   = (unsigned)flow->category.application;
     s.cat_name = CategoryName(s.cat_id);
-    // tx = lower (egress from local), rx = upper (ingress). Confirm orientation
-    // on-device in Task 13; swap these two pairs if reversed.
-    s.total_tx_bytes = flow->stats.total_lower_bytes.load();
-    s.total_rx_bytes = flow->stats.total_upper_bytes.load();
-    s.total_tx_pkts  = flow->stats.total_lower_packets.load();
-    s.total_rx_pkts  = flow->stats.total_upper_packets.load();
-    s.is_new = (event == ndPluginProcessor::Event::DPI_COMPLETE);
+    s.total_tx_bytes = flow->lower_bytes;
+    s.total_rx_bytes = flow->upper_bytes;
+    s.total_tx_pkts  = flow->lower_packets;
+    s.total_rx_pkts  = flow->upper_packets;
+    s.is_new = (event == ndPluginDetection::EVENT_NEW);
 
     {
         lock_guard<mutex> lg(accum_mutex);
@@ -164,8 +163,6 @@ void *nspPlugin::Entry(void) {
     return nullptr;
 }
 
-void nspPlugin::GetLibrary(string &library) { library = PACKAGE; }
-void nspPlugin::GetName(string &name) { name = PACKAGE_NAME; }
 void nspPlugin::GetVersion(string &version) { version = PACKAGE_VERSION; }
 
 void nspPlugin::GetStatus(json &status) {

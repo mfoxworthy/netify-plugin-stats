@@ -5,8 +5,8 @@
 #include <mutex>
 #include <unordered_map>
 
-#include <nd-plugin.hpp>
-#include <nd-flow.hpp>
+#include <nd-plugin.h>
+#include <nd-flow.h>
 
 #include "nsp-config.hpp"
 #include "nsp-accum.hpp"
@@ -14,20 +14,19 @@
 
 constexpr unsigned _NSP_PLUGIN_VER = 0x20260531;
 
-class nspPlugin : public ndPluginProcessor {
+class nspPlugin : public ndPluginDetection {
 public:
-    nspPlugin(const std::string &tag, const ndPlugin::Params &params);
+    nspPlugin(const std::string &tag);
     virtual ~nspPlugin();
 
     virtual void *Entry(void) override;
-    virtual void DispatchEvent(ndPlugin::Event event, void *param = nullptr) override;
-    virtual void DispatchProcessorEvent(
-        ndPluginProcessor::Event event, ndFlow::Ptr &flow) override;
+    virtual void ProcessEvent(ndPluginEvent event, void *param = NULL) override;
+    virtual void ProcessFlow(ndDetectionEvent event, ndFlow *flow) override;
 
-    virtual void GetLibrary(std::string &library) override;
-    virtual void GetName(std::string &name) override;
     virtual void GetVersion(std::string &version) override;
-    virtual void GetStatus(nlohmann::json &status) override;
+
+    // Non-virtual status/identity helpers (called by Entry for logging).
+    void GetStatus(nlohmann::json &status);
 
 protected:
     std::atomic<bool> reload_pending{true};
@@ -50,7 +49,7 @@ protected:
     void Reload();
     void OpenStores();
     void LoadCategoryNames(const std::string &path);
-    static uint64_t FlowKey(const ndFlow::Ptr &flow);
+    static uint64_t FlowKey(ndFlow *flow);
     std::string CategoryName(unsigned cat_id);
 
     std::unordered_map<unsigned, std::string> cat_names;

@@ -50,9 +50,9 @@ define Package/netify-plugin-stats/install
 	$(INSTALL_DIR) $(1)/usr/libexec/rpcd
 	$(INSTALL_BIN) $(CURDIR)/files/usr/libexec/rpcd/luci.netify-stats $(1)/usr/libexec/rpcd/
 
-	$(INSTALL_DIR) $(1)/etc/netifyd/plugins.d
-	$(INSTALL_CONF) $(CURDIR)/files/etc/netifyd/plugins.d/90-netify-plugin-stats.conf \
-	    $(1)/etc/netifyd/plugins.d/
+	# Register plugin with netifyd (4.4.7 uses [plugin_detections] in netifyd.conf)
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) $(CURDIR)/files/etc/uci-defaults/90-netify-plugin-stats $(1)/etc/uci-defaults/
 endef
 
 $(eval $(call BuildPackage,netify-plugin-stats))

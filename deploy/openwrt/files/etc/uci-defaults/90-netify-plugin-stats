@@ -1,0 +1,18 @@
+#!/bin/sh
+# Register netify-plugin-stats with netifyd 4.4.7.
+# netifyd 4.4.7 reads [plugin_detections] from /etc/netifyd.conf.
+# This runs once after install via /etc/uci-defaults.
+
+CONF=/etc/netifyd.conf
+PLUGIN_LIB=/usr/lib/netify-plugin-stats.so
+SECTION="plugin_detections"
+KEY="netify-plugin-stats"
+
+# Add [plugin_detections] section and entry if not already present.
+if ! grep -q "^\[${SECTION}\]" "$CONF" 2>/dev/null; then
+    printf '\n[%s]\n%s = %s\n' "$SECTION" "$KEY" "$PLUGIN_LIB" >> "$CONF"
+elif ! grep -q "^${KEY}" "$CONF" 2>/dev/null; then
+    sed -i "/^\[${SECTION}\]/a ${KEY} = ${PLUGIN_LIB}" "$CONF"
+fi
+
+exit 0
