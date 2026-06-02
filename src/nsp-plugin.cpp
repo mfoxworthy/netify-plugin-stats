@@ -10,8 +10,6 @@
 #include <string>
 #include <sys/stat.h>
 
-#include <nd-util.h>
-
 #include "nsp-plugin.hpp"
 
 using namespace std;
@@ -37,7 +35,7 @@ nspPlugin::~nspPlugin() { Join(); }
 
 void nspPlugin::Reload() {
     auto r = nsp::loadConfig();
-    for (auto &w : r.warnings) nd_printf("%s: config warning: %s\n", tag.c_str(), w.c_str());
+    for (auto &w : r.warnings) nd_printf("%s: config warning: %s\n", GetTag().c_str(), w.c_str());
     {
         lock_guard<mutex> lg(config_mutex);
         config = std::move(r.config);
@@ -45,7 +43,7 @@ void nspPlugin::Reload() {
     OpenStores();
     LoadCategoryNames(config.categories_path);
     nd_printf("%s: loaded config; store_path=%s top_n=%u interval=%us\n",
-        tag.c_str(), config.store_path.c_str(), config.top_n_apps, config.sample_interval);
+        GetTag().c_str(), config.store_path.c_str(), config.top_n_apps, config.sample_interval);
 }
 
 void nspPlugin::OpenStores() {
@@ -57,7 +55,7 @@ void nspPlugin::OpenStores() {
         cats_store.Open(config.store_path, "cats", config.tiers, config.series_capacity_cats, err);
     if (!store_ok) {
         stat_store_errors++;
-        nd_printf("%s: store open failed: %s (continuing in-RAM only)\n", tag.c_str(), err.c_str());
+        nd_printf("%s: store open failed: %s (continuing in-RAM only)\n", GetTag().c_str(), err.c_str());
     }
 }
 
@@ -78,12 +76,12 @@ void nspPlugin::LoadCategoryNames(const std::string &path) {
                  it != j.at("application_tag_index").end(); ++it)
                 names[(unsigned)it.value()] = it.key();
             nd_printf("%s: loaded %zu category names from %s\n",
-                tag.c_str(), names.size(), path.c_str());
+                GetTag().c_str(), names.size(), path.c_str());
         } catch (const std::exception &e) {
-            nd_printf("%s: failed to parse %s: %s\n", tag.c_str(), path.c_str(), e.what());
+            nd_printf("%s: failed to parse %s: %s\n", GetTag().c_str(), path.c_str(), e.what());
         }
     } else {
-        nd_printf("%s: categories file not found: %s\n", tag.c_str(), path.c_str());
+        nd_printf("%s: categories file not found: %s\n", GetTag().c_str(), path.c_str());
     }
     lock_guard<mutex> lg(config_mutex);
     cat_names = std::move(names);
@@ -163,7 +161,7 @@ void *nspPlugin::Entry(void) {
     return nullptr;
 }
 
-void nspPlugin::GetVersion(string &version) { version = PACKAGE_VERSION; }
+void nspPlugin::GetVersion(string &version) { version = string(PACKAGE_VERSION); }
 
 void nspPlugin::GetStatus(json &status) {
     status["plugin_version"] = _NSP_PLUGIN_VER;
