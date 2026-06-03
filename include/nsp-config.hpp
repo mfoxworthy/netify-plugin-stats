@@ -20,6 +20,7 @@ struct Config {
     std::vector<TierSpec> tiers = {
         {10, 360}, {60, 1440}, {300, 8640}
     };
+    std::vector<std::string> monitor_ifs = {"br-lan"};
 };
 
 // UCI is read as map<"section.option", vector<value>>, mirroring ndUci::result.

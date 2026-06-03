@@ -39,6 +39,7 @@ public:
         uint32_t total_tx_pkts;
         uint32_t total_rx_pkts;
         bool is_new;               // first event for this flow this interval
+        std::string iface_name;   // flow->iface->ifname
     };
 
     // Fold one flow event into the current interval (adds only the delta

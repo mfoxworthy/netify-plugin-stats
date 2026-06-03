@@ -45,6 +45,11 @@ ConfigResult parseConfig(const UciMap &uci) {
     if (!tiers.empty() && !any_bad) c.tiers = tiers;
     // If any tier was bad, keep defaults (conservative).
 
+    // monitor_ifs: list option — all values in the vector
+    auto mit = uci.find("global.monitor_if");
+    if (mit != uci.end() && !mit->second.empty())
+        c.monitor_ifs = mit->second;
+
     return r;
 }
 
