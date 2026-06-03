@@ -118,7 +118,7 @@ nlohmann::json buildResponseMerged(const std::vector<TierSet*> &sets,
             for (size_t i = 0; i < cells.size() && i < nslots; ++i) {
                 if (ep[i] == 0) continue;
                 slot_active[i] = true;
-                if (start == 0) start = ep[i];
+                start = (start == 0) ? ep[i] : std::min(start, ep[i]);
                 acc[i] += pick(cells[i], q.metric);
             }
         }
