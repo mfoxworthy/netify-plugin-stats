@@ -86,12 +86,14 @@ protected:
     nsp::Config config;
     mutex config_mutex;
 
-    nsp::Accumulator accum;
-    mutex accum_mutex;
-
-    nsp::TierSet apps_store;
-    nsp::TierSet cats_store;
-    atomic<bool> store_ok{false};
+    struct IfaceState {
+        nsp::Accumulator accum;
+        nsp::TierSet apps_store;
+        nsp::TierSet cats_store;
+    };
+    std::map<std::string, IfaceState> ifaces_;
+    std::map<uint64_t, std::string> flow_iface_;   // flow_id → iface_name
+    mutex ifaces_mutex;
 
     atomic<uint64_t> stat_events{0};
     atomic<uint64_t> stat_samples{0};
