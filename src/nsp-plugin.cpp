@@ -47,16 +47,38 @@ void nspPlugin::Reload() {
 }
 
 void nspPlugin::OpenStores() {
-    lock_guard<mutex> lg(config_mutex);
-    nsp_mkdir_p(config.store_path);
-    string err;
-    store_ok =
-        apps_store.Open(config.store_path, "apps", config.tiers, config.series_capacity_apps, err) &&
-        cats_store.Open(config.store_path, "cats", config.tiers, config.series_capacity_cats, err);
-    if (!store_ok) {
-        stat_store_errors++;
-        nd_printf("%s: store open failed: %s (continuing in-RAM only)\n", GetTag().c_str(), err.c_str());
+    std::vector<std::string> monitor_ifs;
+    std::string store_path;
+    std::vector<TierSpec> tiers;
+    uint32_t cap_apps, cap_cats;
+    {
+        lock_guard<mutex> lcfg(config_mutex);
+        monitor_ifs = config.monitor_ifs;
+        store_path  = config.store_path;
+        tiers       = config.tiers;
+        cap_apps    = config.series_capacity_apps;
+        cap_cats    = config.series_capacity_cats;
     }
+
+    lock_guard<mutex> lifaces(ifaces_mutex);
+    ifaces_.clear();
+    flow_iface_.clear();
+
+    for (const auto &iface : monitor_ifs) {
+        std::string iface_dir = store_path + "/" + iface;
+        nsp_mkdir_p(iface_dir);
+        IfaceState &is = ifaces_[iface];
+        std::string err;
+        bool ok =
+            is.apps_store.Open(iface_dir, "apps", tiers, cap_apps, err) &&
+            is.cats_store.Open(iface_dir, "cats", tiers, cap_cats, err);
+        if (!ok) {
+            stat_store_errors++;
+            nd_printf("%s: store open failed for %s: %s (continuing in-RAM only)\n",
+                GetTag().c_str(), iface.c_str(), err.c_str());
+        }
+    }
+    nd_printf("%s: opened stores for %zu interface(s)\n", GetTag().c_str(), ifaces_.size());
 }
 
 // Stable per-flow key: first 8 bytes of the SHA1 lower digest.
@@ -99,31 +121,46 @@ void nspPlugin::ProcessEvent(ndPluginEvent event, void *) {
 
 void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
     if (event == ndPluginDetection::EVENT_EXPIRING) {
-        lock_guard<mutex> lg(accum_mutex);
-        accum.ForgetFlow(FlowKey(flow));
+        lock_guard<mutex> lg(ifaces_mutex);
+        auto fit = flow_iface_.find(FlowKey(flow));
+        if (fit != flow_iface_.end()) {
+            auto iit = ifaces_.find(fit->second);
+            if (iit != ifaces_.end())
+                iit->second.accum.ForgetFlow(fit->first);
+            flow_iface_.erase(fit);
+        }
         return;
     }
     if (event != ndPluginDetection::EVENT_NEW &&
         event != ndPluginDetection::EVENT_UPDATED)
         return;
 
+    std::string iface_name =
+        (flow->iface != nullptr && flow->iface->ifname != nullptr)
+        ? flow->iface->ifname : "";
+
     nsp::Accumulator::FlowSample s;
-    s.flow_id  = FlowKey(flow);
-    s.app_id   = (unsigned)flow->detected_application;
-    s.app_name = (flow->detected_application_name != NULL && flow->detected_application_name[0] != '\0')
-        ? flow->detected_application_name
-        : ("app-" + std::to_string(s.app_id));
-    s.cat_id   = (unsigned)flow->category.application;
-    s.cat_name = CategoryName(s.cat_id);
+    s.flow_id      = FlowKey(flow);
+    s.app_id       = (unsigned)flow->detected_application;
+    s.app_name     = (flow->detected_application_name != NULL && flow->detected_application_name[0] != '\0')
+                     ? flow->detected_application_name
+                     : ("app-" + std::to_string(s.app_id));
+    s.cat_id       = (unsigned)flow->category.application;
+    s.cat_name     = CategoryName(s.cat_id);   // takes config_mutex briefly; must be OUTSIDE ifaces_mutex
     s.total_tx_bytes = flow->lower_bytes;
     s.total_rx_bytes = flow->upper_bytes;
     s.total_tx_pkts  = flow->lower_packets;
     s.total_rx_pkts  = flow->upper_packets;
-    s.is_new = (event == ndPluginDetection::EVENT_NEW);
+    s.is_new       = (event == ndPluginDetection::EVENT_NEW);
+    s.iface_name   = iface_name;
 
     {
-        lock_guard<mutex> lg(accum_mutex);
-        accum.Observe(s);
+        lock_guard<mutex> lg(ifaces_mutex);
+        flow_iface_[s.flow_id] = iface_name;
+        auto it = ifaces_.find(iface_name);
+        if (it != ifaces_.end())
+            it->second.accum.Observe(s);
+        // Flows on unconfigured interfaces are counted but not accumulated.
     }
     stat_events++;
 }
@@ -138,23 +175,21 @@ void *nspPlugin::Entry(void) {
         {
             lock_guard<mutex> lg(config_mutex);
             interval = config.sample_interval;
-            top_n = config.top_n_apps;
+            top_n    = config.top_n_apps;
         }
         next += seconds(interval);
         while (!ShouldTerminate() && steady_clock::now() < next)
             this_thread::sleep_for(milliseconds(200));
         if (ShouldTerminate()) break;
 
-        nsp::Accumulator::Snapshot snap;
-        {
-            lock_guard<mutex> lg(accum_mutex);
-            snap = accum.SampleAndReset(top_n);
-        }
         int64_t epoch = (int64_t)time(nullptr);
-        if (store_ok) {
-            lock_guard<mutex> lg(config_mutex);
-            stat_series_dropped += apps_store.AppendSample(epoch, snap.apps);
-            stat_series_dropped += cats_store.AppendSample(epoch, snap.cats);
+        {
+            lock_guard<mutex> lg(ifaces_mutex);
+            for (auto &kv : ifaces_) {
+                auto snap = kv.second.accum.SampleAndReset(top_n);
+                stat_series_dropped += kv.second.apps_store.AppendSample(epoch, snap.apps);
+                stat_series_dropped += kv.second.cats_store.AppendSample(epoch, snap.cats);
+            }
         }
         stat_samples++;
     }
@@ -165,13 +200,20 @@ void nspPlugin::GetVersion(string &version) { version = string(PACKAGE_VERSION);
 
 void nspPlugin::GetStatus(json &status) {
     status["plugin_version"] = _NSP_PLUGIN_VER;
-    status["events"] = stat_events.load();
-    status["samples"] = stat_samples.load();
-    status["store_errors"] = stat_store_errors.load();
+    status["events"]         = stat_events.load();
+    status["samples"]        = stat_samples.load();
+    status["store_errors"]   = stat_store_errors.load();
     status["series_dropped"] = stat_series_dropped.load();
-    lock_guard<mutex> lg(config_mutex);
-    status["store_path"] = config.store_path;
-    status["store_ok"] = store_ok.load();
+    {
+        lock_guard<mutex> lg(config_mutex);
+        status["store_path"] = config.store_path;
+    }
+    {
+        lock_guard<mutex> lg(ifaces_mutex);
+        auto arr = nlohmann::json::array();
+        for (const auto &kv : ifaces_) arr.push_back(kv.first);
+        status["interfaces"] = arr;
+    }
 }
 
 ndPluginInit(nspPlugin);
