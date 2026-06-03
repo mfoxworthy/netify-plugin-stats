@@ -1,4 +1,6 @@
-// Reads the seeded store and prints the JSON query response (no UCI/flags).
+// Reads a seeded per-interface store and prints the JSON query response.
+// Usage: query_driver <store-root> [iface]
+// With iface: opens <store-root>/<iface>/; without: opens <store-root>/ directly.
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -7,8 +9,10 @@
 using namespace nsp;
 
 int main(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "usage: query_driver <dir>\n"); return 2; }
+    if (argc < 2) { fprintf(stderr, "usage: query_driver <dir> [iface]\n"); return 2; }
     std::string dir = argv[1];
+    if (argc >= 3) dir = dir + "/" + argv[2];
+
     std::vector<TierSpec> tiers = { {10, 360}, {60, 1440}, {300, 8640} };
     TierSet ts; std::string err;
     if (!ts.Open(dir, "apps", tiers, 64, err)) { fprintf(stderr, "%s\n", err.c_str()); return 1; }

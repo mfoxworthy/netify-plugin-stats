@@ -1,11 +1,40 @@
 #!/bin/sh
 set -e
 DIR="$(mktemp -d)"
+
+# Seed br-lan and wan interface subdirs
 "$SEED" "$DIR"
-OUT="$("$QUERY" "$DIR")"
-echo "$OUT"
-echo "$OUT" | grep -q '"netflix"' || { echo "FAIL: netflix missing"; rm -rf "$DIR"; exit 1; }
-echo "$OUT" | grep -q '5000'       || { echo "FAIL: rx_bytes 5000 missing"; rm -rf "$DIR"; exit 1; }
-echo "$OUT" | grep -q '"youtube"'  || { echo "FAIL: youtube missing"; rm -rf "$DIR"; exit 1; }
-echo "PASS"
+
+# ── per-interface: br-lan ─────────────────────────────────────────────────────
+OUT_LAN="$("$QUERY" "$DIR" br-lan)"
+echo "$OUT_LAN" | grep -q '"netflix"'  || { echo "FAIL: netflix missing from br-lan"; rm -rf "$DIR"; exit 1; }
+echo "$OUT_LAN" | grep -q '"youtube"'  || { echo "FAIL: youtube missing from br-lan"; rm -rf "$DIR"; exit 1; }
+echo "PASS: br-lan single-interface query"
+
+# ── per-interface: wan ────────────────────────────────────────────────────────
+OUT_WAN="$("$QUERY" "$DIR" wan)"
+echo "$OUT_WAN" | grep -q '"zoom"'     || { echo "FAIL: zoom missing from wan"; rm -rf "$DIR"; exit 1; }
+echo "$OUT_WAN" | grep -q '"youtube"'  || { echo "FAIL: youtube missing from wan"; rm -rf "$DIR"; exit 1; }
+echo "PASS: wan single-interface query"
+
+# ── combined merge (optional — requires QUERY_MERGED binary) ──────────────────
+if [ -n "$QUERY_MERGED" ]; then
+    OUT_ALL="$("$QUERY_MERGED" "$DIR")"
+    echo "$OUT_ALL" | grep -q '"netflix"' || { echo "FAIL: netflix missing from combined"; rm -rf "$DIR"; exit 1; }
+    echo "$OUT_ALL" | grep -q '"zoom"'    || { echo "FAIL: zoom missing from combined"; rm -rf "$DIR"; exit 1; }
+    echo "$OUT_ALL" | grep -q '"youtube"' || { echo "FAIL: youtube missing from combined"; rm -rf "$DIR"; exit 1; }
+    # youtube appears in both stores; combined rx_bytes should be 3000+1000=4000
+    echo "$OUT_ALL" | grep -q '4000'      || { echo "FAIL: youtube combined rx_bytes should be 4000"; rm -rf "$DIR"; exit 1; }
+    echo "PASS: combined merge query"
+fi
+
+# ── list_interfaces (optional — requires LIST_IFACES binary) ──────────────────
+if [ -n "$LIST_IFACES" ]; then
+    OUT_LIST="$("$LIST_IFACES" "$DIR")"
+    echo "$OUT_LIST" | grep -q '"br-lan"' || { echo "FAIL: br-lan missing from list_interfaces"; rm -rf "$DIR"; exit 1; }
+    echo "$OUT_LIST" | grep -q '"wan"'    || { echo "FAIL: wan missing from list_interfaces"; rm -rf "$DIR"; exit 1; }
+    echo "PASS: list_interfaces"
+fi
+
+echo "PASS: all integration checks"
 rm -rf "$DIR"
