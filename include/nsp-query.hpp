@@ -28,4 +28,14 @@ bool resolveTier(const std::vector<TierSpec> &tiers, const std::string &range, s
 // Build the response JSON for `q` against an opened TierSet.
 nlohmann::json buildResponse(TierSet &ts, const Query &q);
 
+// Build a merged response from multiple TierSets (combined / all-interface mode).
+// Sums values element-wise across all sets, re-applies top_n with __other__ folding.
+nlohmann::json buildResponseMerged(const std::vector<TierSet*> &sets,
+                                   const Query &q,
+                                   size_t top_n);
+
+// Scan store_path for subdirectories containing at least one non-empty .rrb file.
+// Returns interface names in sorted order.
+std::vector<std::string> listInterfaces(const std::string &store_path);
+
 } // namespace nsp
