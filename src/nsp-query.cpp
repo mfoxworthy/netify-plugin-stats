@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include <sys/stat.h>
+
 #include <nlohmann/json.hpp>
 
 #include "nsp-config.hpp"
@@ -35,6 +37,11 @@ int main(int argc, char **argv) {
         else if (a.rfind("--key=", 0)        == 0) keys.push_back(val("--key="));
         else if (a.rfind("--iface=", 0)      == 0) iface              = val("--iface=");
         else if (a == "--list-interfaces")          list_ifaces        = true;
+    }
+
+    if (!iface.empty() && iface.find('/') != std::string::npos) {
+        emit_error("invalid interface name: " + iface);
+        return 1;
     }
 
     ConfigResult cr = loadConfig();
@@ -72,6 +79,11 @@ int main(int argc, char **argv) {
     // ── single-interface mode ─────────────────────────────────────────────────
     if (!iface.empty()) {
         std::string iface_dir = cfg.store_path + "/" + iface;
+        struct stat st;
+        if (stat(iface_dir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+            emit_error("unknown interface: " + iface);
+            return 1;
+        }
         TierSet ts;
         if (!ts.Open(iface_dir, dimname, cfg.tiers, cap, err)) {
             emit_error("store open failed: " + err);
@@ -101,6 +113,10 @@ int main(int argc, char **argv) {
             sets.push_back(ts.get());
             owned.push_back(std::move(ts));
         }
+    }
+    if (sets.empty()) {
+        emit_error("all interface stores failed to open; last error: " + err);
+        return 1;
     }
     printf("%s\n", buildResponseMerged(sets, q, cfg.top_n_apps).dump().c_str());
     return 0;
