@@ -4,9 +4,12 @@ PKG_NAME:=netify-plugin-stats
 PKG_VERSION:=0.1.0
 PKG_RELEASE:=1
 
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
+PKG_SOURCE:=v$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://github.com/mfoxworthy/netify-plugin-stats/archive/refs/tags
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
+PKG_HASH:=fa6b02cb98d210559d72dcbdf2682225376b4af14659785157a58d82e13e904d
 
+PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1
 PKG_BUILD_PARALLEL:=1
@@ -29,9 +32,12 @@ define Package/netify-plugin-stats/description
   them via an rpcd/ubus interface for the LuCI statistics UI.
 endef
 
+define Package/netify-plugin-stats/conffiles
+/etc/config/netify-stats
+endef
+
 define Build/Prepare
-	mkdir -p $(PKG_BUILD_DIR)
-	$(CP) $(CURDIR)/srctree/. $(PKG_BUILD_DIR)/
+	$(call Build/Prepare/Default)
 	mkdir -p $(PKG_BUILD_DIR)/m4 $(PKG_BUILD_DIR)/automake
 endef
 
@@ -50,7 +56,6 @@ define Package/netify-plugin-stats/install
 	$(INSTALL_DIR) $(1)/usr/libexec/rpcd
 	$(INSTALL_BIN) $(CURDIR)/files/usr/libexec/rpcd/luci.netify-stats $(1)/usr/libexec/rpcd/
 
-	# Register plugin with netifyd (4.4.7 uses [plugin_detections] in netifyd.conf)
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) $(CURDIR)/files/etc/uci-defaults/90-netify-plugin-stats $(1)/etc/uci-defaults/
 endef
