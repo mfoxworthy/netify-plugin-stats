@@ -49,7 +49,7 @@ void nspPlugin::Reload() {
 void nspPlugin::OpenStores() {
     std::vector<std::string> monitor_ifs;
     std::string store_path;
-    std::vector<TierSpec> tiers;
+    std::vector<nsp::TierSpec> tiers;
     uint32_t cap_apps, cap_cats;
     {
         lock_guard<mutex> lcfg(config_mutex);
@@ -135,9 +135,7 @@ void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
         event != ndPluginDetection::EVENT_UPDATED)
         return;
 
-    std::string iface_name =
-        (flow->iface != nullptr && flow->iface->ifname != nullptr)
-        ? flow->iface->ifname : "";
+    std::string iface_name = flow->iface.ifname;
 
     nsp::Accumulator::FlowSample s;
     s.flow_id      = FlowKey(flow);
