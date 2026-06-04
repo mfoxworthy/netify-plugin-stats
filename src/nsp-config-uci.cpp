@@ -33,8 +33,15 @@ ConfigResult loadConfig() {
                 struct uci_element *oe;
                 uci_foreach_element(&s->options, oe) {
                     struct uci_option *o = uci_to_option(oe);
-                    if (o->type == UCI_TYPE_STRING && o->v.string)
+                    if (o->type == UCI_TYPE_STRING && o->v.string) {
                         m[prefix + o->e.name] = { std::string(o->v.string) };
+                    } else if (o->type == UCI_TYPE_LIST) {
+                        std::vector<std::string> vals;
+                        struct uci_element *le;
+                        uci_foreach_element(&o->v.list, le)
+                            if (le->name) vals.push_back(le->name);
+                        m[prefix + o->e.name] = vals;
+                    }
                 }
             }
         }
