@@ -6,6 +6,34 @@
 
 namespace nsp {
 
+// Maximum number of data points emitted per series. When the store has more
+// slots than this, adjacent slots are summed into bins so the JSON response
+// stays small enough to transit the ubus socket without breaking rpcd's
+// connection to ubusd (~1MB hard limit).
+static constexpr size_t MAX_OUTPUT_SLOTS = 360;
+
+// Emit a JSON array of (at most MAX_OUTPUT_SLOTS) values by summing `vals`
+// into bins of `stride` consecutive slots. A bin is null if no slot in it
+// was active; otherwise it is the integer sum of active slot values.
+static nlohmann::json emit_values(const std::vector<uint64_t> &vals,
+                                  const std::vector<bool>     &active,
+                                  size_t stride) {
+    size_t nslots = vals.size();
+    size_t n_out  = (nslots + stride - 1) / stride;
+    nlohmann::json arr = nlohmann::json::array();
+    for (size_t b = 0; b < n_out; ++b) {
+        bool     bin_active = false;
+        uint64_t bin_sum    = 0;
+        size_t   end        = std::min((b + 1) * stride, nslots);
+        for (size_t k = b * stride; k < end; ++k) {
+            if (active[k]) { bin_active = true; bin_sum += vals[k]; }
+        }
+        arr.push_back(bin_active ? nlohmann::json((int64_t)bin_sum)
+                                 : nlohmann::json(nullptr));
+    }
+    return arr;
+}
+
 bool resolveTier(const std::vector<TierSpec> &tiers, const std::string &range, size_t &tier_out) {
     // Map a human range to the tier whose total span best covers it, by step.
     // Convention: tier index ascends with coarser step. "1h"->0,"1d"->1,"30d"->2.
@@ -32,11 +60,14 @@ static uint64_t pick(const Cell &c, Metric m) {
 nlohmann::json buildResponse(TierSet &ts, const Query &q) {
     nlohmann::json out;
     Store &s = ts.tier(q.tier);
-    out["step"] = s.slot_duration();
+    uint32_t step  = s.slot_duration();
+    size_t   nslots = s.slot_count();
+    size_t   stride = (nslots > MAX_OUTPUT_SLOTS) ? (nslots / MAX_OUTPUT_SLOTS) : 1;
+
+    out["step"] = (int64_t)(step * stride);
 
     std::vector<std::string> names = q.keys.empty() ? s.series_names() : q.keys;
 
-    // start = epoch of the oldest slot (first non-zero), else 0.
     int64_t start = 0;
     out["series"] = nlohmann::json::array();
     for (const auto &name : names) {
@@ -44,12 +75,13 @@ nlohmann::json buildResponse(TierSet &ts, const Query &q) {
         ts.ReadSeries(q.tier, name, ep, cells);
         if (start == 0)
             for (auto e : ep) if (e != 0) { start = e; break; }
-        nlohmann::json vals = nlohmann::json::array();
-        for (size_t i = 0; i < cells.size(); ++i) {
-            if (ep[i] == 0) vals.push_back(nullptr);
-            else vals.push_back(pick(cells[i], q.metric));
+
+        std::vector<bool>     active(nslots, false);
+        std::vector<uint64_t> vals(nslots, 0);
+        for (size_t i = 0; i < cells.size() && i < nslots; ++i) {
+            if (ep[i] != 0) { active[i] = true; vals[i] = pick(cells[i], q.metric); }
         }
-        out["series"].push_back({ {"name", name}, {"values", std::move(vals)} });
+        out["series"].push_back({ {"name", name}, {"values", emit_values(vals, active, stride)} });
     }
     out["start"] = start;
     return out;
@@ -134,7 +166,9 @@ nlohmann::json buildResponseMerged(const std::vector<TierSet*> &sets,
     }
     std::sort(totals.rbegin(), totals.rend());
 
-    out["step"]   = step;
+    size_t stride = (nslots > MAX_OUTPUT_SLOTS) ? (nslots / MAX_OUTPUT_SLOTS) : 1;
+
+    out["step"]   = (int64_t)(step * stride);
     out["start"]  = start;
     out["series"] = nlohmann::json::array();
 
@@ -144,12 +178,8 @@ nlohmann::json buildResponseMerged(const std::vector<TierSet*> &sets,
     for (size_t i = 0; i < totals.size(); ++i) {
         const auto &vals = merged[totals[i].second];
         if (i < top_n) {
-            nlohmann::json arr = nlohmann::json::array();
-            for (size_t j = 0; j < nslots; ++j)
-                arr.push_back(slot_active[j]
-                              ? nlohmann::json((int64_t)vals[j])
-                              : nlohmann::json(nullptr));
-            out["series"].push_back({{"name", totals[i].second}, {"values", std::move(arr)}});
+            out["series"].push_back({{"name", totals[i].second},
+                                     {"values", emit_values(vals, slot_active, stride)}});
         } else {
             for (size_t j = 0; j < nslots; ++j)
                 if (slot_active[j]) other_vals[j] += vals[j];
@@ -158,12 +188,8 @@ nlohmann::json buildResponseMerged(const std::vector<TierSet*> &sets,
     }
 
     if (has_other) {
-        nlohmann::json arr = nlohmann::json::array();
-        for (size_t j = 0; j < nslots; ++j)
-            arr.push_back(slot_active[j]
-                          ? nlohmann::json((int64_t)other_vals[j])
-                          : nlohmann::json(nullptr));
-        out["series"].push_back({{"name", std::string(OTHER_SERIES)}, {"values", std::move(arr)}});
+        out["series"].push_back({{"name", std::string(OTHER_SERIES)},
+                                  {"values", emit_values(other_vals, slot_active, stride)}});
     }
 
     return out;
