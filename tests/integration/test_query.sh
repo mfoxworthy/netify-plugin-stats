@@ -10,15 +10,15 @@ trap 'rm -rf "$DIR"' EXIT
 OUT_LAN="$("$QUERY" "$DIR" br-lan)"
 echo "$OUT_LAN" | grep -q '"netflix"'  || { echo "FAIL: netflix missing from br-lan"; exit 1; }
 echo "$OUT_LAN" | grep -q '"youtube"'  || { echo "FAIL: youtube missing from br-lan"; exit 1; }
-echo "PASS: br-lan single-interface query"
 echo "$OUT_LAN" | grep -q '"zoom"'    && { echo "FAIL: zoom leaked into br-lan"; exit 1; }
+echo "PASS: br-lan single-interface query"
 
 # ── per-interface: wan ────────────────────────────────────────────────────────
 OUT_WAN="$("$QUERY" "$DIR" wan)"
 echo "$OUT_WAN" | grep -q '"zoom"'     || { echo "FAIL: zoom missing from wan"; exit 1; }
 echo "$OUT_WAN" | grep -q '"youtube"'  || { echo "FAIL: youtube missing from wan"; exit 1; }
-echo "PASS: wan single-interface query"
 echo "$OUT_WAN" | grep -q '"netflix"' && { echo "FAIL: netflix leaked into wan"; exit 1; }
+echo "PASS: wan single-interface query"
 
 # ── combined merge (optional — requires QUERY_MERGED binary) ──────────────────
 if [ -n "$QUERY_MERGED" ]; then
