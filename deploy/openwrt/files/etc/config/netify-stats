@@ -2,6 +2,8 @@ config netify_stats 'global'
 	option store_path '/tmp/netify-stats'
 	option sample_interval '10'
 	option top_n_apps '50'
+	option live_duration '86400'
+	option top_n_hosts '100'
 
 config tier
 	option step '10'

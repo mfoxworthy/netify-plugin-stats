@@ -21,6 +21,8 @@ struct Config {
         {10, 360}, {60, 1440}, {300, 8640}
     };
     std::vector<std::string> monitor_ifs = {"br-lan"};
+    unsigned live_duration = 86400;   // seconds between live-window auto-resets; 0 = never
+    unsigned top_n_hosts   = 100;     // max hosts in query_live response
 };
 
 // UCI is read as map<"section.option", vector<value>>, mirroring ndUci::result.

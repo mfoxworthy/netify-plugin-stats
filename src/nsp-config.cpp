@@ -50,6 +50,9 @@ ConfigResult parseConfig(const UciMap &uci) {
     if (mit != uci.end() && !mit->second.empty())
         c.monitor_ifs = mit->second;
 
+    if (get1(uci, "global.live_duration", v)) c.live_duration = (unsigned)strtoul(v.c_str(), nullptr, 0);
+    if (get1(uci, "global.top_n_hosts",   v)) c.top_n_hosts   = (unsigned)strtoul(v.c_str(), nullptr, 0);
+
     return r;
 }
 
