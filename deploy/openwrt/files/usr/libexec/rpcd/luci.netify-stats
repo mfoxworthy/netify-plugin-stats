@@ -1,10 +1,9 @@
 #!/bin/sh
-# rpcd exec backend for netify-stats: wraps netify-stats-query as the ubus
-# object "luci.netify-stats" with read-only "query" and "list_interfaces" methods.
+# rpcd exec backend for netify-stats.
 
 case "$1" in
 	list)
-		echo '{ "query": { "dimension": "apps", "metric": "rx_bytes", "range": "1h", "keys": [], "iface": "" }, "list_interfaces": {} }'
+		echo '{ "query": { "dimension": "apps", "metric": "rx_bytes", "range": "1h", "keys": [], "iface": "" }, "list_interfaces": {}, "query_live": {}, "reset_live": {} }'
 		;;
 	call)
 		case "$2" in
@@ -28,6 +27,15 @@ case "$1" in
 				;;
 			list_interfaces)
 				/usr/bin/netify-stats-query --list-interfaces
+				;;
+			query_live)
+				/usr/bin/netify-stats-query --query-live
+				;;
+			reset_live)
+				store_path=$(uci -q get netify-stats.global.store_path)
+				[ -n "$store_path" ] || store_path=/tmp/netify-stats
+				touch "${store_path}/.reset-live"
+				echo '{}'
 				;;
 			*)
 				echo '{ "error": "unknown method" }'
