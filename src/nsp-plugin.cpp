@@ -121,13 +121,20 @@ void nspPlugin::ProcessEvent(ndPluginEvent event, void *) {
 
 void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
     if (event == ndPluginDetection::EVENT_EXPIRING) {
-        lock_guard<mutex> lg(ifaces_mutex);
-        auto fit = flow_iface_.find(FlowKey(flow));
-        if (fit != flow_iface_.end()) {
-            auto iit = ifaces_.find(fit->second);
-            if (iit != ifaces_.end())
-                iit->second.accum.ForgetFlow(fit->first);
-            flow_iface_.erase(fit);
+        uint64_t fkey = FlowKey(flow);
+        {
+            lock_guard<mutex> lg(ifaces_mutex);
+            auto fit = flow_iface_.find(fkey);
+            if (fit != flow_iface_.end()) {
+                auto iit = ifaces_.find(fit->second);
+                if (iit != ifaces_.end())
+                    iit->second.accum.ForgetFlow(fit->first);
+                flow_iface_.erase(fit);
+            }
+        }
+        {
+            lock_guard<mutex> llg(live_mutex_);
+            live_flow_snap_.erase(fkey);
         }
         return;
     }
@@ -160,6 +167,52 @@ void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
             it->second.accum.Observe(s);
         // Flows on unconfigured interfaces are counted but not accumulated.
     }
+
+    // ── Live accumulation (separate lock, never held with ifaces_mutex) ──────
+    {
+        lock_guard<mutex> llg(live_mutex_);
+
+        // Compute per-flow delta from cumulative counters.
+        uint64_t cur_upper = flow->upper_bytes;
+        uint64_t cur_lower = flow->lower_bytes;
+
+        LiveSnap &snap = live_flow_snap_[s.flow_id];
+        uint64_t delta_upper = (cur_upper >= snap.upper) ? (cur_upper - snap.upper) : 0;
+        uint64_t delta_lower = (cur_lower >= snap.lower) ? (cur_lower - snap.lower) : 0;
+        snap.upper = cur_upper;
+        snap.lower = cur_lower;
+
+        // Determine local device perspective.
+        // If lower side is local: local RX = upper delta, local TX = lower delta.
+        bool lower_is_local = (flow->lower_map == ndFlow::LOWER_LOCAL);
+        uint64_t host_rx = lower_is_local ? delta_upper : delta_lower;
+        uint64_t host_tx = lower_is_local ? delta_lower : delta_upper;
+
+        // Determine local MAC and IP.
+        std::string local_mac = lower_is_local
+            ? flow->lower_mac.GetString()
+            : flow->upper_mac.GetString();
+        std::string local_ip  = lower_is_local
+            ? flow->lower_addr.GetString()
+            : flow->upper_addr.GetString();
+
+        if (!local_mac.empty() && (host_rx > 0 || host_tx > 0)) {
+            // Per-interface global app/cat totals.
+            live_iface_[iface_name].apps[s.app_name].rx_bytes += host_rx;
+            live_iface_[iface_name].apps[s.app_name].tx_bytes += host_tx;
+            live_iface_[iface_name].cats[s.cat_name].rx_bytes += host_rx;
+            live_iface_[iface_name].cats[s.cat_name].tx_bytes += host_tx;
+
+            // Per-host totals (aggregated across interfaces).
+            auto &h = live_hosts_[local_mac];
+            h.ip = local_ip;
+            h.apps[s.app_name].rx_bytes += host_rx;
+            h.apps[s.app_name].tx_bytes += host_tx;
+            h.total.rx_bytes += host_rx;
+            h.total.tx_bytes += host_tx;
+        }
+    }
+
     stat_events++;
 }
 
