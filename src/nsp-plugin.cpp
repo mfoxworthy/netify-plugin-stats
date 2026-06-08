@@ -68,7 +68,10 @@ void nspPlugin::OpenStores() {
 
     {
         lock_guard<mutex> llg(live_mutex_);
+        live_iface_.clear();
+        live_hosts_.clear();
         live_flow_snap_.clear();
+        live_start_ = 0;
     }
 
     {
@@ -254,9 +257,13 @@ void *nspPlugin::Entry(void) {
         }
         stat_samples++;
 
-        // ── Live: sentinel reset + auto-reset + write JSON ──────────────────
+        // ── Live: sentinel reset + auto-reset + snapshot ─────────────────────
         nsp::Config live_cfg;
         { lock_guard<mutex> lg(config_mutex); live_cfg = config; }
+
+        std::map<std::string, LiveIfaceEntry>  snap_iface;
+        std::map<std::string, LiveHostEntry>   snap_hosts;
+        int64_t snap_start = 0;
 
         {
             lock_guard<mutex> llg(live_mutex_);
@@ -273,7 +280,6 @@ void *nspPlugin::Entry(void) {
                 nd_printf("%s: live data reset (sentinel)\n", GetTag().c_str());
             }
 
-            // Auto-reset when the configured duration elapses.
             if (live_start_ == 0) live_start_ = time(nullptr);
             if (live_cfg.live_duration > 0 &&
                 (time(nullptr) - live_start_) >= (time_t)live_cfg.live_duration) {
@@ -284,8 +290,14 @@ void *nspPlugin::Entry(void) {
                 nd_printf("%s: live data auto-reset (duration elapsed)\n", GetTag().c_str());
             }
 
-            WriteLiveJson(live_cfg);
+            // Snapshot — lock released after this block.
+            snap_iface = live_iface_;
+            snap_hosts = live_hosts_;
+            snap_start = live_start_;
         }
+
+        // JSON build and file write outside the lock.
+        WriteLiveJson(snap_iface, snap_hosts, snap_start, live_cfg);
     }
     return nullptr;
 }
@@ -315,17 +327,22 @@ static std::string live_clean(const std::string &n) {
     return (n.rfind("netify.", 0) == 0) ? n.substr(7) : n;
 }
 
-void nspPlugin::WriteLiveJson(const nsp::Config &cfg) {
-    // Called under live_mutex_. Builds query_live response and writes atomically.
+void nspPlugin::WriteLiveJson(
+    const std::map<std::string, LiveIfaceEntry> &iface_data,
+    const std::map<std::string, LiveHostEntry>  &host_data,
+    int64_t start,
+    const nsp::Config &cfg)
+{
+    // Builds query_live response from snapshot data and writes atomically.
     using njson = nlohmann::json;
 
     njson out;
-    out["start"]    = (int64_t)live_start_;
+    out["start"]    = start;
     out["duration"] = cfg.live_duration;
 
     // ── Apps (sorted by total, with per-interface breakdown) ────────────────
     std::map<std::string, std::pair<uint64_t, std::map<std::string, LiveMetrics>>> app_agg;
-    for (const auto &[iface, ie] : live_iface_) {
+    for (const auto &[iface, ie] : iface_data) {
         for (const auto &[aname, m] : ie.apps) {
             auto &a = app_agg[aname];
             a.first += m.rx_bytes + m.tx_bytes;
@@ -357,7 +374,7 @@ void nspPlugin::WriteLiveJson(const nsp::Config &cfg) {
 
     // ── Cats (sorted by total, with per-interface breakdown) ────────────────
     std::map<std::string, std::pair<uint64_t, std::map<std::string, LiveMetrics>>> cat_agg;
-    for (const auto &[iface, ie] : live_iface_) {
+    for (const auto &[iface, ie] : iface_data) {
         for (const auto &[cname, m] : ie.cats) {
             auto &c = cat_agg[cname];
             c.first += m.rx_bytes + m.tx_bytes;
@@ -389,8 +406,8 @@ void nspPlugin::WriteLiveJson(const nsp::Config &cfg) {
 
     // ── Hosts (sorted by total, truncated to top_n_hosts) ───────────────────
     std::vector<std::pair<uint64_t, std::string>> host_sorted;
-    host_sorted.reserve(live_hosts_.size());
-    for (const auto &[mac, h] : live_hosts_)
+    host_sorted.reserve(host_data.size());
+    for (const auto &[mac, h] : host_data)
         host_sorted.push_back({h.total.rx_bytes + h.total.tx_bytes, mac});
     std::sort(host_sorted.rbegin(), host_sorted.rend());
     if (host_sorted.size() > cfg.top_n_hosts)
@@ -398,7 +415,7 @@ void nspPlugin::WriteLiveJson(const nsp::Config &cfg) {
 
     njson hosts_arr = njson::array();
     for (const auto &[tot, mac] : host_sorted) {
-        const auto &h = live_hosts_.at(mac);
+        const auto &h = host_data.at(mac);
         njson ho;
         ho["mac"] = mac;
         ho["ip"]  = h.ip;
@@ -410,6 +427,8 @@ void nspPlugin::WriteLiveJson(const nsp::Config &cfg) {
         for (const auto &[an, m] : h.apps)
             happ_sorted.push_back({m.rx_bytes + m.tx_bytes, an});
         std::sort(happ_sorted.rbegin(), happ_sorted.rend());
+        if (happ_sorted.size() > cfg.top_n_apps)
+            happ_sorted.resize(cfg.top_n_apps);
 
         njson happs = njson::array();
         for (const auto &[t, raw_an] : happ_sorted) {
@@ -430,7 +449,13 @@ void nspPlugin::WriteLiveJson(const nsp::Config &cfg) {
     if (f.is_open()) {
         f << out.dump();
         f.close();
-        ::rename(tmp_path.c_str(), path.c_str());
+        if (f.fail()) {
+            nd_printf("nsp: WriteLiveJson write failed, discarding\n");
+            ::unlink(tmp_path.c_str());
+        } else if (::rename(tmp_path.c_str(), path.c_str()) != 0) {
+            nd_printf("nsp: WriteLiveJson rename failed\n");
+            ::unlink(tmp_path.c_str());
+        }
     }
 }
 

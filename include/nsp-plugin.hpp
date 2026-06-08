@@ -129,7 +129,11 @@ protected:
     time_t  live_start_ = 0;
     mutex   live_mutex_;
 
-    void WriteLiveJson(const nsp::Config &cfg);  // called under live_mutex_
+    static void WriteLiveJson(
+        const std::map<std::string, LiveIfaceEntry> &iface_data,
+        const std::map<std::string, LiveHostEntry>  &host_data,
+        int64_t start,
+        const nsp::Config &cfg);
 
     atomic<uint64_t> stat_events{0};
     atomic<uint64_t> stat_samples{0};
