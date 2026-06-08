@@ -1,10 +1,12 @@
 // netify-stats-query — read the store, emit the JSON data contract.
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include <fcntl.h>
 #include <sys/stat.h>
 
 #include <nlohmann/json.hpp>
@@ -24,7 +26,7 @@ int main(int argc, char **argv) {
     std::string dim = "apps", metric = "rx_bytes", range = "1h";
     std::string store_path_override;
     std::string iface;
-    bool list_ifaces = false;
+    bool list_ifaces = false, query_live = false, reset_live = false;
     std::vector<std::string> keys;
 
     for (int i = 1; i < argc; ++i) {
@@ -37,6 +39,8 @@ int main(int argc, char **argv) {
         else if (a.rfind("--key=", 0)        == 0) keys.push_back(val("--key="));
         else if (a.rfind("--iface=", 0)      == 0) iface              = val("--iface=");
         else if (a == "--list-interfaces")          list_ifaces        = true;
+        else if (a == "--query-live")               query_live         = true;
+        else if (a == "--reset-live")               reset_live         = true;
     }
 
     if (!iface.empty() && iface.find('/') != std::string::npos) {
@@ -54,6 +58,34 @@ int main(int argc, char **argv) {
         json j;
         j["interfaces"] = ifaces;
         printf("%s\n", j.dump().c_str());
+        return 0;
+    }
+
+    // ── query-live mode ───────────────────────────────────────────────────────
+    if (query_live) {
+        std::string path = cfg.store_path + "/.live.json";
+        std::ifstream lf(path);
+        if (!lf.is_open()) {
+            json empty;
+            empty["start"] = 0; empty["duration"] = (int64_t)cfg.live_duration;
+            empty["apps"] = json::array(); empty["cats"] = json::array();
+            empty["hosts"] = json::array();
+            printf("%s\n", empty.dump().c_str());
+            return 0;
+        }
+        std::string content((std::istreambuf_iterator<char>(lf)),
+                             std::istreambuf_iterator<char>());
+        printf("%s\n", content.c_str());
+        return 0;
+    }
+
+    // ── reset-live mode ───────────────────────────────────────────────────────
+    if (reset_live) {
+        std::string sentinel = cfg.store_path + "/.reset-live";
+        int fd = ::open(sentinel.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
+        if (fd >= 0) ::close(fd);
+        json r; r["ok"] = true;
+        printf("%s\n", r.dump().c_str());
         return 0;
     }
 
