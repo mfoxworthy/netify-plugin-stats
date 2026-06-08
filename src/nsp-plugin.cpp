@@ -253,6 +253,39 @@ void *nspPlugin::Entry(void) {
             }
         }
         stat_samples++;
+
+        // ── Live: sentinel reset + auto-reset + write JSON ──────────────────
+        nsp::Config live_cfg;
+        { lock_guard<mutex> lg(config_mutex); live_cfg = config; }
+
+        {
+            lock_guard<mutex> llg(live_mutex_);
+
+            // Sentinel file: reset_live rpcd handler writes this.
+            std::string sentinel = live_cfg.store_path + "/.reset-live";
+            struct stat sentinel_st;
+            if (::stat(sentinel.c_str(), &sentinel_st) == 0) {
+                live_iface_.clear();
+                live_hosts_.clear();
+                live_flow_snap_.clear();
+                live_start_ = time(nullptr);
+                ::unlink(sentinel.c_str());
+                nd_printf("%s: live data reset (sentinel)\n", GetTag().c_str());
+            }
+
+            // Auto-reset when the configured duration elapses.
+            if (live_start_ == 0) live_start_ = time(nullptr);
+            if (live_cfg.live_duration > 0 &&
+                (time(nullptr) - live_start_) >= (time_t)live_cfg.live_duration) {
+                live_iface_.clear();
+                live_hosts_.clear();
+                live_flow_snap_.clear();
+                live_start_ = time(nullptr);
+                nd_printf("%s: live data auto-reset (duration elapsed)\n", GetTag().c_str());
+            }
+
+            WriteLiveJson(live_cfg);
+        }
     }
     return nullptr;
 }
@@ -274,6 +307,130 @@ void nspPlugin::GetStatus(json &status) {
         auto arr = nlohmann::json::array();
         for (const auto &kv : ifaces_) arr.push_back(kv.first);
         status["interfaces"] = arr;
+    }
+}
+
+// Helper: strip "netify." prefix for display in live JSON.
+static std::string live_clean(const std::string &n) {
+    return (n.rfind("netify.", 0) == 0) ? n.substr(7) : n;
+}
+
+void nspPlugin::WriteLiveJson(const nsp::Config &cfg) {
+    // Called under live_mutex_. Builds query_live response and writes atomically.
+    using njson = nlohmann::json;
+
+    njson out;
+    out["start"]    = (int64_t)live_start_;
+    out["duration"] = cfg.live_duration;
+
+    // ── Apps (sorted by total, with per-interface breakdown) ────────────────
+    std::map<std::string, std::pair<uint64_t, std::map<std::string, LiveMetrics>>> app_agg;
+    for (const auto &[iface, ie] : live_iface_) {
+        for (const auto &[aname, m] : ie.apps) {
+            auto &a = app_agg[aname];
+            a.first += m.rx_bytes + m.tx_bytes;
+            auto &im = a.second[iface];
+            im.rx_bytes += m.rx_bytes;
+            im.tx_bytes += m.tx_bytes;
+        }
+    }
+    std::vector<std::pair<uint64_t, std::string>> app_sorted;
+    app_sorted.reserve(app_agg.size());
+    for (const auto &[n, v] : app_agg) app_sorted.push_back({v.first, n});
+    std::sort(app_sorted.rbegin(), app_sorted.rend());
+
+    njson apps_arr = njson::array();
+    for (const auto &[tot, raw_name] : app_sorted) {
+        njson ao;
+        ao["name"] = live_clean(raw_name);
+        uint64_t trx = 0, ttx = 0;
+        njson ifo = njson::object();
+        for (const auto &[iface, m] : app_agg[raw_name].second) {
+            trx += m.rx_bytes; ttx += m.tx_bytes;
+            ifo[iface] = {{"rx", (int64_t)m.rx_bytes}, {"tx", (int64_t)m.tx_bytes}};
+        }
+        ao["rx"] = (int64_t)trx; ao["tx"] = (int64_t)ttx;
+        ao["interfaces"] = ifo;
+        apps_arr.push_back(std::move(ao));
+    }
+    out["apps"] = std::move(apps_arr);
+
+    // ── Cats (sorted by total, with per-interface breakdown) ────────────────
+    std::map<std::string, std::pair<uint64_t, std::map<std::string, LiveMetrics>>> cat_agg;
+    for (const auto &[iface, ie] : live_iface_) {
+        for (const auto &[cname, m] : ie.cats) {
+            auto &c = cat_agg[cname];
+            c.first += m.rx_bytes + m.tx_bytes;
+            auto &im = c.second[iface];
+            im.rx_bytes += m.rx_bytes;
+            im.tx_bytes += m.tx_bytes;
+        }
+    }
+    std::vector<std::pair<uint64_t, std::string>> cat_sorted;
+    cat_sorted.reserve(cat_agg.size());
+    for (const auto &[n, v] : cat_agg) cat_sorted.push_back({v.first, n});
+    std::sort(cat_sorted.rbegin(), cat_sorted.rend());
+
+    njson cats_arr = njson::array();
+    for (const auto &[tot, raw_name] : cat_sorted) {
+        njson co;
+        co["name"] = live_clean(raw_name);
+        uint64_t trx = 0, ttx = 0;
+        njson ifo = njson::object();
+        for (const auto &[iface, m] : cat_agg[raw_name].second) {
+            trx += m.rx_bytes; ttx += m.tx_bytes;
+            ifo[iface] = {{"rx", (int64_t)m.rx_bytes}, {"tx", (int64_t)m.tx_bytes}};
+        }
+        co["rx"] = (int64_t)trx; co["tx"] = (int64_t)ttx;
+        co["interfaces"] = ifo;
+        cats_arr.push_back(std::move(co));
+    }
+    out["cats"] = std::move(cats_arr);
+
+    // ── Hosts (sorted by total, truncated to top_n_hosts) ───────────────────
+    std::vector<std::pair<uint64_t, std::string>> host_sorted;
+    host_sorted.reserve(live_hosts_.size());
+    for (const auto &[mac, h] : live_hosts_)
+        host_sorted.push_back({h.total.rx_bytes + h.total.tx_bytes, mac});
+    std::sort(host_sorted.rbegin(), host_sorted.rend());
+    if (host_sorted.size() > cfg.top_n_hosts)
+        host_sorted.resize(cfg.top_n_hosts);
+
+    njson hosts_arr = njson::array();
+    for (const auto &[tot, mac] : host_sorted) {
+        const auto &h = live_hosts_.at(mac);
+        njson ho;
+        ho["mac"] = mac;
+        ho["ip"]  = h.ip;
+        ho["rx"]  = (int64_t)h.total.rx_bytes;
+        ho["tx"]  = (int64_t)h.total.tx_bytes;
+
+        std::vector<std::pair<uint64_t, std::string>> happ_sorted;
+        happ_sorted.reserve(h.apps.size());
+        for (const auto &[an, m] : h.apps)
+            happ_sorted.push_back({m.rx_bytes + m.tx_bytes, an});
+        std::sort(happ_sorted.rbegin(), happ_sorted.rend());
+
+        njson happs = njson::array();
+        for (const auto &[t, raw_an] : happ_sorted) {
+            const auto &m = h.apps.at(raw_an);
+            happs.push_back({{"name", live_clean(raw_an)},
+                             {"rx",   (int64_t)m.rx_bytes},
+                             {"tx",   (int64_t)m.tx_bytes}});
+        }
+        ho["apps"] = std::move(happs);
+        hosts_arr.push_back(std::move(ho));
+    }
+    out["hosts"] = std::move(hosts_arr);
+
+    // Write atomically via temp file + rename.
+    std::string path     = cfg.store_path + "/.live.json";
+    std::string tmp_path = path + ".tmp";
+    std::ofstream f(tmp_path);
+    if (f.is_open()) {
+        f << out.dump();
+        f.close();
+        ::rename(tmp_path.c_str(), path.c_str());
     }
 }
 
