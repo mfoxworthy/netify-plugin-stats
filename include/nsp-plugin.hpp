@@ -68,6 +68,33 @@ using json = nlohmann::json;
 
 constexpr unsigned _NSP_PLUGIN_VER = 0x20260531;
 
+// ── Live (in-memory, cross-dimensional) data model ───────────────────────────
+
+// Raw cumulative bytes snapshot per flow, for live delta computation.
+struct LiveSnap {
+    uint64_t upper = 0;   // flow->upper_bytes at last observation
+    uint64_t lower = 0;   // flow->lower_bytes at last observation
+};
+
+// Accumulated bytes in the live window (from the local host's perspective).
+struct LiveMetrics {
+    uint64_t rx_bytes = 0;
+    uint64_t tx_bytes = 0;
+};
+
+// Per-host entry: current IP, per-app breakdown, running total.
+struct LiveHostEntry {
+    std::string ip;
+    std::map<std::string, LiveMetrics> apps;   // app_name → metrics
+    LiveMetrics total;
+};
+
+// Per-interface global totals (app + cat dimensions).
+struct LiveIfaceEntry {
+    std::map<std::string, LiveMetrics> apps;   // app_name → metrics
+    std::map<std::string, LiveMetrics> cats;   // cat_name → metrics
+};
+
 class nspPlugin : public ndPluginDetection {
 public:
     nspPlugin(const string &tag);
@@ -94,6 +121,15 @@ protected:
     std::map<std::string, IfaceState> ifaces_;
     std::map<uint64_t, std::string> flow_iface_;   // flow_id → iface_name
     mutex ifaces_mutex;
+
+    // Live cross-dimensional accumulation (written to .live.json each tick).
+    std::map<std::string,  LiveIfaceEntry>  live_iface_;   // iface  → global totals
+    std::map<std::string,  LiveHostEntry>   live_hosts_;   // mac    → per-host totals
+    std::map<uint64_t,     LiveSnap>        live_flow_snap_;  // flow_id → cumulative snapshot
+    time_t  live_start_ = 0;
+    mutex   live_mutex_;
+
+    void WriteLiveJson(const nsp::Config &cfg);  // called under live_mutex_
 
     atomic<uint64_t> stat_events{0};
     atomic<uint64_t> stat_samples{0};
