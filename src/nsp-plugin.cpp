@@ -60,25 +60,35 @@ void nspPlugin::OpenStores() {
         cap_cats    = config.series_capacity_cats;
     }
 
-    lock_guard<mutex> lifaces(ifaces_mutex);
-    ifaces_.clear();
-    flow_iface_.clear();
-
-    for (const auto &iface : monitor_ifs) {
-        std::string iface_dir = store_path + "/" + iface;
-        nsp_mkdir_p(iface_dir);
-        IfaceState &is = ifaces_[iface];
-        std::string err;
-        bool ok =
-            is.apps_store.Open(iface_dir, "apps", tiers, cap_apps, err) &&
-            is.cats_store.Open(iface_dir, "cats", tiers, cap_cats, err);
-        if (!ok) {
-            stat_store_errors++;
-            nd_printf("%s: store open failed for %s: %s (continuing in-RAM only)\n",
-                GetTag().c_str(), iface.c_str(), err.c_str());
-        }
+    {
+        lock_guard<mutex> lifaces(ifaces_mutex);
+        ifaces_.clear();
+        flow_iface_.clear();
     }
-    nd_printf("%s: opened stores for %zu interface(s)\n", GetTag().c_str(), ifaces_.size());
+
+    {
+        lock_guard<mutex> llg(live_mutex_);
+        live_flow_snap_.clear();
+    }
+
+    {
+        lock_guard<mutex> lifaces(ifaces_mutex);
+        for (const auto &iface : monitor_ifs) {
+            std::string iface_dir = store_path + "/" + iface;
+            nsp_mkdir_p(iface_dir);
+            IfaceState &is = ifaces_[iface];
+            std::string err;
+            bool ok =
+                is.apps_store.Open(iface_dir, "apps", tiers, cap_apps, err) &&
+                is.cats_store.Open(iface_dir, "cats", tiers, cap_cats, err);
+            if (!ok) {
+                stat_store_errors++;
+                nd_printf("%s: store open failed for %s: %s (continuing in-RAM only)\n",
+                    GetTag().c_str(), iface.c_str(), err.c_str());
+            }
+        }
+        nd_printf("%s: opened stores for %zu interface(s)\n", GetTag().c_str(), ifaces_.size());
+    }
 }
 
 // Stable per-flow key: first 8 bytes of the SHA1 lower digest.
@@ -182,34 +192,34 @@ void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
         snap.upper = cur_upper;
         snap.lower = cur_lower;
 
-        // Determine local device perspective.
-        // If lower side is local: local RX = upper delta, local TX = lower delta.
-        bool lower_is_local = (flow->lower_map == ndFlow::LOWER_LOCAL);
-        uint64_t host_rx = lower_is_local ? delta_upper : delta_lower;
-        uint64_t host_tx = lower_is_local ? delta_lower : delta_upper;
+        // Skip if local side is indeterminate (tunnels, loopback, VPN).
+        if (flow->lower_map != ndFlow::LOWER_UNKNOWN) {
+            bool lower_is_local = (flow->lower_map == ndFlow::LOWER_LOCAL);
+            uint64_t host_rx = lower_is_local ? delta_upper : delta_lower;
+            uint64_t host_tx = lower_is_local ? delta_lower : delta_upper;
 
-        // Determine local MAC and IP.
-        std::string local_mac = lower_is_local
-            ? flow->lower_mac.GetString()
-            : flow->upper_mac.GetString();
-        std::string local_ip  = lower_is_local
-            ? flow->lower_addr.GetString()
-            : flow->upper_addr.GetString();
+            std::string local_mac = lower_is_local
+                ? flow->lower_mac.GetString()
+                : flow->upper_mac.GetString();
+            std::string local_ip  = lower_is_local
+                ? flow->lower_addr.GetString()
+                : flow->upper_addr.GetString();
 
-        if (!local_mac.empty() && (host_rx > 0 || host_tx > 0)) {
-            // Per-interface global app/cat totals.
-            live_iface_[iface_name].apps[s.app_name].rx_bytes += host_rx;
-            live_iface_[iface_name].apps[s.app_name].tx_bytes += host_tx;
-            live_iface_[iface_name].cats[s.cat_name].rx_bytes += host_rx;
-            live_iface_[iface_name].cats[s.cat_name].tx_bytes += host_tx;
+            // Filter zero MACs (virtual interfaces, TAP tunnels).
+            static const std::string kZeroMac = "00:00:00:00:00:00";
+            if (!local_mac.empty() && local_mac != kZeroMac && (host_rx > 0 || host_tx > 0)) {
+                live_iface_[iface_name].apps[s.app_name].rx_bytes += host_rx;
+                live_iface_[iface_name].apps[s.app_name].tx_bytes += host_tx;
+                live_iface_[iface_name].cats[s.cat_name].rx_bytes += host_rx;
+                live_iface_[iface_name].cats[s.cat_name].tx_bytes += host_tx;
 
-            // Per-host totals (aggregated across interfaces).
-            auto &h = live_hosts_[local_mac];
-            h.ip = local_ip;
-            h.apps[s.app_name].rx_bytes += host_rx;
-            h.apps[s.app_name].tx_bytes += host_tx;
-            h.total.rx_bytes += host_rx;
-            h.total.tx_bytes += host_tx;
+                auto &h = live_hosts_[local_mac];
+                h.ip = local_ip;
+                h.apps[s.app_name].rx_bytes += host_rx;
+                h.apps[s.app_name].tx_bytes += host_tx;
+                h.total.rx_bytes += host_rx;
+                h.total.tx_bytes += host_tx;
+            }
         }
     }
 
