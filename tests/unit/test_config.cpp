@@ -8,6 +8,8 @@ TEST_CASE("config: defaults when uci is empty") {
     CHECK(r.config.store_path == "/tmp/netify-stats");
     CHECK(r.config.sample_interval == 10);
     CHECK(r.config.top_n_apps == 50);
+    CHECK(r.config.live_duration == 86400);
+    CHECK(r.config.top_n_hosts == 100);
     REQUIRE(r.config.tiers.size() == 3);
     CHECK(r.config.tiers[0].step == 10);
     CHECK(r.config.tiers[0].count == 360);
@@ -23,6 +25,15 @@ TEST_CASE("config: global options override defaults") {
     CHECK(r.config.sample_interval == 30);
     CHECK(r.config.top_n_apps == 10);
     CHECK(r.config.series_capacity_apps >= 11);
+}
+
+TEST_CASE("config: live_duration and top_n_hosts parse from uci") {
+    UciMap m2;
+    m2["global.live_duration"] = {"3600"};
+    m2["global.top_n_hosts"]   = {"50"};
+    ConfigResult r2 = parseConfig(m2);
+    CHECK(r2.config.live_duration == 3600);
+    CHECK(r2.config.top_n_hosts   == 50);
 }
 
 TEST_CASE("config: explicit tiers replace defaults in order") {
