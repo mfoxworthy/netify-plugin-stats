@@ -2,13 +2,16 @@
 #include "config.h"
 #endif
 
+#include <arpa/inet.h>
 #include <chrono>
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <sstream>
 #include <thread>
 #include <string>
 #include <sys/stat.h>
+#include <libnetfilter_conntrack/libnetfilter_conntrack.h>
 
 #include "nsp-plugin.hpp"
 
@@ -126,6 +129,21 @@ std::string nspPlugin::CategoryName(unsigned cat_id) {
     lock_guard<mutex> lg(config_mutex);
     auto it = cat_names.find(cat_id);
     return (it != cat_names.end()) ? it->second : ("cat-" + std::to_string(cat_id));
+}
+
+void nspPlugin::ReadArpTable() {
+    std::ifstream f("/proc/net/arp");
+    if (!f.is_open()) return;
+    std::string line;
+    std::getline(f, line);  // discard header
+    lock_guard<mutex> lg(ct_mutex_);
+    while (std::getline(f, line)) {
+        std::istringstream iss(line);
+        std::string ip, hw_type, flags, mac, mask, dev;
+        if (!(iss >> ip >> hw_type >> flags >> mac >> mask >> dev)) continue;
+        if (flags != "0x2") continue;  // 0x2 = ATF_COM (complete, reachable)
+        mac_map_[ip] = mac;
+    }
 }
 
 void nspPlugin::ProcessEvent(ndPluginEvent event, void *) {
