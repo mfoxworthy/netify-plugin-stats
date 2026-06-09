@@ -142,6 +142,12 @@ public:
 
     void GetStatus(nlohmann::json &status);
 
+    void ProcessCtEntry(
+        struct nf_conntrack *ct,
+        const nsp::Config &cfg,
+        std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_apps,
+        std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_cats);
+
 protected:
     atomic<bool> reload_pending{true};
 
@@ -170,11 +176,6 @@ protected:
 
     void ReadArpTable();
     void ConntrackDump(
-        const nsp::Config &cfg,
-        std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_apps,
-        std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_cats);
-    void ProcessCtEntry(
-        struct nf_conntrack *ct,
         const nsp::Config &cfg,
         std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_apps,
         std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_cats);

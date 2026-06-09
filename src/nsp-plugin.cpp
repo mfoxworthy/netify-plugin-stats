@@ -190,7 +190,7 @@ void nspPlugin::ProcessCtEntry(
 
     // ── Build lookup key ─────────────────────────────────────────────────────
     ConntrackKey ck;
-    ck.proto = nfct_get_attr_u8(ct, ATTR_PROTO_NUM);
+    ck.proto = nfct_get_attr_u8(ct, ATTR_ORIG_L4PROTO);
 
     struct in_addr a;
     a.s_addr = nfct_get_attr_u32(ct, ATTR_ORIG_IPV4_SRC);
