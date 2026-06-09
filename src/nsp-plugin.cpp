@@ -219,6 +219,19 @@ void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
             }
             live_flow_snap_.erase(fkey);
         }
+
+        // Remove from conntrack classification and snap maps.
+        if (flow->lower_map != ndFlow::LOWER_UNKNOWN) {
+            ConntrackKey ck;
+            ck.proto       = flow->ip_protocol;
+            ck.orig_src_ip = flow->lower_addr.GetString();
+            ck.orig_dst_ip = flow->upper_addr.GetString();
+            ck.orig_sport  = (uint16_t)flow->lower_addr.GetPort();
+            ck.orig_dport  = (uint16_t)flow->upper_addr.GetPort();
+            lock_guard<mutex> lg(ct_mutex_);
+            ct_flow_map_.erase(ck);
+            ct_snap_.erase(ck);
+        }
         return;
     }
     if (event != ndPluginDetection::EVENT_NEW &&
@@ -241,6 +254,29 @@ void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
     s.total_rx_pkts  = flow->upper_packets;
     s.is_new       = (event == ndPluginDetection::EVENT_NEW);
     s.iface_name   = iface_name;
+
+    // ── Build conntrack classification map ────────────────────────────────────
+    {
+        ConntrackKey ck;
+        ck.proto       = flow->ip_protocol;
+        ck.orig_src_ip = flow->lower_addr.GetString();
+        ck.orig_dst_ip = flow->upper_addr.GetString();
+        ck.orig_sport  = (uint16_t)flow->lower_addr.GetPort();
+        ck.orig_dport  = (uint16_t)flow->upper_addr.GetPort();
+
+        bool lower_is_local = (flow->lower_map == ndFlow::LOWER_LOCAL);
+        std::string client_ip = lower_is_local
+            ? flow->lower_addr.GetString() : flow->upper_addr.GetString();
+
+        lock_guard<mutex> lg(ct_mutex_);
+        auto &fc = ct_flow_map_[ck];
+        fc.app_name   = s.app_name;
+        fc.cat_name   = s.cat_name;
+        fc.client_ip  = client_ip;
+        fc.iface_name = iface_name;
+        if (fc.client_mac.empty() && mac_map_.count(client_ip))
+            fc.client_mac = mac_map_.at(client_ip);
+    }
 
     {
         lock_guard<mutex> lg(ifaces_mutex);
