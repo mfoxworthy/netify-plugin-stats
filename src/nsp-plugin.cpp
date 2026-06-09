@@ -135,18 +135,70 @@ void nspPlugin::ProcessEvent(ndPluginEvent event, void *) {
 void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
     if (event == ndPluginDetection::EVENT_EXPIRING) {
         uint64_t fkey = FlowKey(flow);
+
+        // Build a final FlowSample so Observe() captures bytes accumulated
+        // since the last EVENT_UPDATED before we forget the flow.
+        // CategoryName() takes config_mutex — call it before ifaces_mutex.
+        nsp::Accumulator::FlowSample sf;
+        sf.flow_id       = fkey;
+        sf.app_id        = (unsigned)flow->detected_application;
+        sf.app_name      = (flow->detected_application_name != NULL && flow->detected_application_name[0] != '\0')
+                           ? flow->detected_application_name
+                           : ("app-" + std::to_string(sf.app_id));
+        sf.cat_id        = (unsigned)flow->category.application;
+        sf.cat_name      = CategoryName(sf.cat_id);
+        sf.total_tx_bytes = flow->lower_bytes;
+        sf.total_rx_bytes = flow->upper_bytes;
+        sf.total_tx_pkts  = flow->lower_packets;
+        sf.total_rx_pkts  = flow->upper_packets;
+        sf.is_new        = false;
+        sf.iface_name    = flow->iface.ifname;
+
         {
             lock_guard<mutex> lg(ifaces_mutex);
             auto fit = flow_iface_.find(fkey);
             if (fit != flow_iface_.end()) {
                 auto iit = ifaces_.find(fit->second);
-                if (iit != ifaces_.end())
-                    iit->second.accum.ForgetFlow(fit->first);
+                if (iit != ifaces_.end()) {
+                    iit->second.accum.Observe(sf);   // capture final bytes
+                    iit->second.accum.ForgetFlow(fkey);
+                }
                 flow_iface_.erase(fit);
             }
         }
+
+        // Final live-layer delta: capture bytes since last live snapshot.
         {
             lock_guard<mutex> llg(live_mutex_);
+            if (flow->lower_map != ndFlow::LOWER_UNKNOWN) {
+                uint64_t cur_upper = flow->upper_bytes;
+                uint64_t cur_lower = flow->lower_bytes;
+                auto snap_it = live_flow_snap_.find(fkey);
+                if (snap_it != live_flow_snap_.end()) {
+                    uint64_t du = (cur_upper >= snap_it->second.upper) ? (cur_upper - snap_it->second.upper) : 0;
+                    uint64_t dl = (cur_lower >= snap_it->second.lower) ? (cur_lower - snap_it->second.lower) : 0;
+                    bool lower_is_local = (flow->lower_map == ndFlow::LOWER_LOCAL);
+                    uint64_t host_rx = lower_is_local ? du : dl;
+                    uint64_t host_tx = lower_is_local ? dl : du;
+                    std::string local_mac = lower_is_local
+                        ? flow->lower_mac.GetString() : flow->upper_mac.GetString();
+                    static const std::string kZeroMac = "00:00:00:00:00:00";
+                    if (!local_mac.empty() && local_mac != kZeroMac && (host_rx > 0 || host_tx > 0)) {
+                        const std::string &iface_name = sf.iface_name;
+                        live_iface_[iface_name].apps[sf.app_name].rx_bytes += host_rx;
+                        live_iface_[iface_name].apps[sf.app_name].tx_bytes += host_tx;
+                        live_iface_[iface_name].cats[sf.cat_name].rx_bytes += host_rx;
+                        live_iface_[iface_name].cats[sf.cat_name].tx_bytes += host_tx;
+                        auto &h = live_hosts_[local_mac];
+                        h.ip = lower_is_local
+                            ? flow->lower_addr.GetString() : flow->upper_addr.GetString();
+                        h.apps[sf.app_name].rx_bytes += host_rx;
+                        h.apps[sf.app_name].tx_bytes += host_tx;
+                        h.total.rx_bytes += host_rx;
+                        h.total.tx_bytes += host_tx;
+                    }
+                }
+            }
             live_flow_snap_.erase(fkey);
         }
         return;
