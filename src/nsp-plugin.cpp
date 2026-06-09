@@ -66,7 +66,6 @@ void nspPlugin::OpenStores() {
     {
         lock_guard<mutex> lifaces(ifaces_mutex);
         ifaces_.clear();
-        flow_iface_.clear();
     }
 
     {
@@ -313,36 +312,14 @@ void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
     if (event == ndPluginDetection::EVENT_EXPIRING) {
         uint64_t fkey = FlowKey(flow);
 
-        // Build a final FlowSample so Observe() captures bytes accumulated
-        // since the last EVENT_UPDATED before we forget the flow.
-        // CategoryName() takes config_mutex — call it before ifaces_mutex.
-        nsp::Accumulator::FlowSample sf;
-        sf.flow_id       = fkey;
-        sf.app_id        = (unsigned)flow->detected_application;
-        sf.app_name      = (flow->detected_application_name != NULL && flow->detected_application_name[0] != '\0')
-                           ? flow->detected_application_name
-                           : ("app-" + std::to_string(sf.app_id));
-        sf.cat_id        = (unsigned)flow->category.application;
-        sf.cat_name      = CategoryName(sf.cat_id);
-        sf.total_tx_bytes = flow->lower_bytes;
-        sf.total_rx_bytes = flow->upper_bytes;
-        sf.total_tx_pkts  = flow->lower_packets;
-        sf.total_rx_pkts  = flow->upper_packets;
-        sf.is_new        = false;
-        sf.iface_name    = flow->iface.ifname;
-
-        {
-            lock_guard<mutex> lg(ifaces_mutex);
-            auto fit = flow_iface_.find(fkey);
-            if (fit != flow_iface_.end()) {
-                auto iit = ifaces_.find(fit->second);
-                if (iit != ifaces_.end()) {
-                    iit->second.accum.Observe(sf);   // capture final bytes
-                    iit->second.accum.ForgetFlow(fkey);
-                }
-                flow_iface_.erase(fit);
-            }
-        }
+        // Derive names needed by the live layer.
+        // CategoryName() takes config_mutex — call before any other lock.
+        unsigned app_id  = (unsigned)flow->detected_application;
+        std::string app_name = (flow->detected_application_name != NULL && flow->detected_application_name[0] != '\0')
+                               ? flow->detected_application_name
+                               : ("app-" + std::to_string(app_id));
+        std::string cat_name  = CategoryName((unsigned)flow->category.application);
+        std::string iface_name = flow->iface.ifname;
 
         // Final live-layer delta: capture bytes since last live snapshot.
         {
@@ -361,16 +338,15 @@ void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
                         ? flow->lower_mac.GetString() : flow->upper_mac.GetString();
                     static const std::string kZeroMac = "00:00:00:00:00:00";
                     if (!local_mac.empty() && local_mac != kZeroMac && (host_rx > 0 || host_tx > 0)) {
-                        const std::string &iface_name = sf.iface_name;
-                        live_iface_[iface_name].apps[sf.app_name].rx_bytes += host_rx;
-                        live_iface_[iface_name].apps[sf.app_name].tx_bytes += host_tx;
-                        live_iface_[iface_name].cats[sf.cat_name].rx_bytes += host_rx;
-                        live_iface_[iface_name].cats[sf.cat_name].tx_bytes += host_tx;
+                        live_iface_[iface_name].apps[app_name].rx_bytes += host_rx;
+                        live_iface_[iface_name].apps[app_name].tx_bytes += host_tx;
+                        live_iface_[iface_name].cats[cat_name].rx_bytes += host_rx;
+                        live_iface_[iface_name].cats[cat_name].tx_bytes += host_tx;
                         auto &h = live_hosts_[local_mac];
                         h.ip = lower_is_local
                             ? flow->lower_addr.GetString() : flow->upper_addr.GetString();
-                        h.apps[sf.app_name].rx_bytes += host_rx;
-                        h.apps[sf.app_name].tx_bytes += host_tx;
+                        h.apps[app_name].rx_bytes += host_rx;
+                        h.apps[app_name].tx_bytes += host_tx;
                         h.total.rx_bytes += host_rx;
                         h.total.tx_bytes += host_tx;
                     }
@@ -437,15 +413,6 @@ void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
             fc.client_mac = mac_map_.at(client_ip);
     }
 
-    {
-        lock_guard<mutex> lg(ifaces_mutex);
-        flow_iface_[s.flow_id] = iface_name;
-        auto it = ifaces_.find(iface_name);
-        if (it != ifaces_.end())
-            it->second.accum.Observe(s);
-        // Flows on unconfigured interfaces are counted but not accumulated.
-    }
-
     // ── Live accumulation (separate lock, never held with ifaces_mutex) ──────
     {
         lock_guard<mutex> llg(live_mutex_);
@@ -494,15 +461,40 @@ void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
     stat_events++;
 }
 
+// Rank NamedMetrics by total bytes, keep top_n, fold remainder into __other__.
+static std::vector<nsp::NamedMetrics> applyTopN(
+    std::map<std::string, nsp::Metrics> &src, size_t top_n)
+{
+    std::vector<nsp::NamedMetrics> ranked;
+    ranked.reserve(src.size());
+    for (auto &[name, m] : src) ranked.push_back({name, m});
+    std::sort(ranked.begin(), ranked.end(), [](const nsp::NamedMetrics &a, const nsp::NamedMetrics &b) {
+        return (a.m.tx_bytes + a.m.rx_bytes) > (b.m.tx_bytes + b.m.rx_bytes);
+    });
+    nsp::Metrics other; bool have_other = false;
+    std::vector<nsp::NamedMetrics> out;
+    for (size_t i = 0; i < ranked.size(); ++i) {
+        if (i < top_n) { out.push_back(ranked[i]); continue; }
+        have_other = true;
+        other.tx_bytes += ranked[i].m.tx_bytes; other.rx_bytes += ranked[i].m.rx_bytes;
+        other.tx_pkts  += ranked[i].m.tx_pkts;  other.rx_pkts  += ranked[i].m.rx_pkts;
+        other.flows    += ranked[i].m.flows;
+    }
+    if (have_other) out.push_back({nsp::OTHER_SERIES, other});
+    return out;
+}
+
 void *nspPlugin::Entry(void) {
     using namespace std::chrono;
     auto next = steady_clock::now();
     while (!ShouldTerminate()) {
         if (reload_pending.exchange(false)) Reload();
 
+        nsp::Config cfg;
         unsigned interval; size_t top_n;
         {
             lock_guard<mutex> lg(config_mutex);
+            cfg      = config;
             interval = config.sample_interval;
             top_n    = config.top_n_apps;
         }
@@ -512,56 +504,56 @@ void *nspPlugin::Entry(void) {
         if (ShouldTerminate()) break;
 
         int64_t epoch = (int64_t)time(nullptr);
+
+        // Update ARP table then poll conntrack for per-tick byte deltas.
+        ReadArpTable();
+        std::map<std::string, std::map<std::string, nsp::Metrics>> tick_apps, tick_cats;
+        ConntrackDump(cfg, tick_apps, tick_cats);
+
+        // Flush tick accumulators to ring buffer stores.
         {
             lock_guard<mutex> lg(ifaces_mutex);
-            for (auto &kv : ifaces_) {
-                auto snap = kv.second.accum.SampleAndReset(top_n);
-                stat_series_dropped += kv.second.apps_store.AppendSample(epoch, snap.apps);
-                stat_series_dropped += kv.second.cats_store.AppendSample(epoch, snap.cats);
+            for (const auto &iface : cfg.monitor_ifs) {
+                auto it = ifaces_.find(iface);
+                if (it == ifaces_.end()) continue;
+                auto &is = it->second;
+                if (tick_apps.count(iface))
+                    stat_series_dropped += is.apps_store.AppendSample(
+                        epoch, applyTopN(tick_apps[iface], top_n));
+                if (tick_cats.count(iface))
+                    stat_series_dropped += is.cats_store.AppendSample(
+                        epoch, applyTopN(tick_cats[iface], static_cast<size_t>(-1)));
             }
         }
         stat_samples++;
 
-        // ── Live: sentinel reset + auto-reset + snapshot ─────────────────────
+        // Live layer: sentinel reset + auto-reset + write JSON snapshot.
         nsp::Config live_cfg;
         { lock_guard<mutex> lg(config_mutex); live_cfg = config; }
-
         std::map<std::string, LiveIfaceEntry>  snap_iface;
         std::map<std::string, LiveHostEntry>   snap_hosts;
         int64_t snap_start = 0;
-
         {
             lock_guard<mutex> llg(live_mutex_);
-
-            // Sentinel file: reset_live rpcd handler writes this.
             std::string sentinel = live_cfg.store_path + "/.reset-live";
-            struct stat sentinel_st;
-            if (::stat(sentinel.c_str(), &sentinel_st) == 0) {
-                live_iface_.clear();
-                live_hosts_.clear();
-                live_flow_snap_.clear();
+            struct stat sst;
+            if (::stat(sentinel.c_str(), &sst) == 0) {
+                live_iface_.clear(); live_hosts_.clear(); live_flow_snap_.clear();
                 live_start_ = time(nullptr);
                 ::unlink(sentinel.c_str());
                 nd_printf("%s: live data reset (sentinel)\n", GetTag().c_str());
             }
-
             if (live_start_ == 0) live_start_ = time(nullptr);
             if (live_cfg.live_duration > 0 &&
                 (time(nullptr) - live_start_) >= (time_t)live_cfg.live_duration) {
-                live_iface_.clear();
-                live_hosts_.clear();
-                live_flow_snap_.clear();
+                live_iface_.clear(); live_hosts_.clear(); live_flow_snap_.clear();
                 live_start_ = time(nullptr);
-                nd_printf("%s: live data auto-reset (duration elapsed)\n", GetTag().c_str());
+                nd_printf("%s: live data auto-reset\n", GetTag().c_str());
             }
-
-            // Snapshot — lock released after this block.
             snap_iface = live_iface_;
             snap_hosts = live_hosts_;
             snap_start = live_start_;
         }
-
-        // JSON build and file write outside the lock.
         WriteLiveJson(snap_iface, snap_hosts, snap_start, live_cfg);
     }
     return nullptr;

@@ -149,12 +149,10 @@ protected:
     mutex config_mutex;
 
     struct IfaceState {
-        nsp::Accumulator accum;
         nsp::TierSet apps_store;
         nsp::TierSet cats_store;
     };
     std::map<std::string, IfaceState> ifaces_;
-    std::map<uint64_t, std::string> flow_iface_;   // flow_id → iface_name
     mutex ifaces_mutex;
 
     // Live cross-dimensional accumulation (written to .live.json each tick).
