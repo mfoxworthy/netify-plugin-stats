@@ -23,7 +23,7 @@ define Package/netify-plugin-stats
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Netify per-application statistics plugin
-  DEPENDS:=+netifyd +libuci +libstdcpp
+  DEPENDS:=+netifyd +libnetfilter_conntrack +libuci +libstdcpp
 endef
 
 define Package/netify-plugin-stats/description

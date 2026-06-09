@@ -15,7 +15,6 @@ if BUILD_PACKAGE
 noinst_LTLIBRARIES = libnspcore.la
 libnspcore_la_SOURCES = \
     nsp-store.cpp \
-    nsp-accum.cpp \
     nsp-query-build.cpp \
     nsp-config.cpp \
     nsp-config-uci.cpp

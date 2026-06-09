@@ -375,20 +375,13 @@ void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
 
     std::string iface_name = flow->iface.ifname;
 
-    nsp::Accumulator::FlowSample s;
-    s.flow_id      = FlowKey(flow);
-    s.app_id       = (unsigned)flow->detected_application;
-    s.app_name     = (flow->detected_application_name != NULL && flow->detected_application_name[0] != '\0')
-                     ? flow->detected_application_name
-                     : ("app-" + std::to_string(s.app_id));
-    s.cat_id       = (unsigned)flow->category.application;
-    s.cat_name     = CategoryName(s.cat_id);   // takes config_mutex briefly; must be OUTSIDE ifaces_mutex
-    s.total_tx_bytes = flow->lower_bytes;
-    s.total_rx_bytes = flow->upper_bytes;
-    s.total_tx_pkts  = flow->lower_packets;
-    s.total_rx_pkts  = flow->upper_packets;
-    s.is_new       = (event == ndPluginDetection::EVENT_NEW);
-    s.iface_name   = iface_name;
+    uint64_t flow_id = FlowKey(flow);
+    unsigned app_id  = (unsigned)flow->detected_application;
+    std::string app_name = (flow->detected_application_name != NULL && flow->detected_application_name[0] != '\0')
+                           ? flow->detected_application_name
+                           : ("app-" + std::to_string(app_id));
+    std::string cat_name = CategoryName((unsigned)flow->category.application);
+    // CategoryName() takes config_mutex briefly; must be called OUTSIDE ifaces_mutex and live_mutex_.
 
     // ── Build conntrack classification map ────────────────────────────────────
     {
@@ -405,8 +398,8 @@ void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
 
         lock_guard<mutex> lg(ct_mutex_);
         auto &fc = ct_flow_map_[ck];
-        fc.app_name   = s.app_name;
-        fc.cat_name   = s.cat_name;
+        fc.app_name   = app_name;
+        fc.cat_name   = cat_name;
         fc.client_ip  = client_ip;
         fc.iface_name = iface_name;
         if (fc.client_mac.empty() && mac_map_.count(client_ip))
@@ -421,7 +414,7 @@ void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
         uint64_t cur_upper = flow->upper_bytes;
         uint64_t cur_lower = flow->lower_bytes;
 
-        LiveSnap &snap = live_flow_snap_[s.flow_id];
+        LiveSnap &snap = live_flow_snap_[flow_id];
         uint64_t delta_upper = (cur_upper >= snap.upper) ? (cur_upper - snap.upper) : 0;
         uint64_t delta_lower = (cur_lower >= snap.lower) ? (cur_lower - snap.lower) : 0;
         snap.upper = cur_upper;
@@ -443,15 +436,15 @@ void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
             // Filter zero MACs (virtual interfaces, TAP tunnels).
             static const std::string kZeroMac = "00:00:00:00:00:00";
             if (!local_mac.empty() && local_mac != kZeroMac && (host_rx > 0 || host_tx > 0)) {
-                live_iface_[iface_name].apps[s.app_name].rx_bytes += host_rx;
-                live_iface_[iface_name].apps[s.app_name].tx_bytes += host_tx;
-                live_iface_[iface_name].cats[s.cat_name].rx_bytes += host_rx;
-                live_iface_[iface_name].cats[s.cat_name].tx_bytes += host_tx;
+                live_iface_[iface_name].apps[app_name].rx_bytes += host_rx;
+                live_iface_[iface_name].apps[app_name].tx_bytes += host_tx;
+                live_iface_[iface_name].cats[cat_name].rx_bytes += host_rx;
+                live_iface_[iface_name].cats[cat_name].tx_bytes += host_tx;
 
                 auto &h = live_hosts_[local_mac];
                 h.ip = local_ip;
-                h.apps[s.app_name].rx_bytes += host_rx;
-                h.apps[s.app_name].tx_bytes += host_tx;
+                h.apps[app_name].rx_bytes += host_rx;
+                h.apps[app_name].tx_bytes += host_tx;
                 h.total.rx_bytes += host_rx;
                 h.total.tx_bytes += host_tx;
             }
