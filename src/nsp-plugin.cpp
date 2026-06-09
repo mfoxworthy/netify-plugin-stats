@@ -146,6 +146,165 @@ void nspPlugin::ReadArpTable() {
     }
 }
 
+// Context struct passed to the nfct C callback.
+struct CtDumpCtx {
+    nspPlugin *self;
+    const nsp::Config &cfg;
+    std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_apps;
+    std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_cats;
+};
+
+static int ct_cb(enum nf_conntrack_msg_type /*type*/,
+                 struct nf_conntrack *ct, void *data) {
+    auto *ctx = static_cast<CtDumpCtx *>(data);
+    ctx->self->ProcessCtEntry(ct, ctx->cfg, ctx->tick_apps, ctx->tick_cats);
+    return NFCT_CB_CONTINUE;
+}
+
+void nspPlugin::ConntrackDump(
+    const nsp::Config &cfg,
+    std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_apps,
+    std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_cats)
+{
+    nfct_handle *h = nfct_open(CONNTRACK, 0);
+    if (!h) {
+        nd_printf("%s: nfct_open failed: %s\n", GetTag().c_str(), strerror(errno));
+        return;
+    }
+    CtDumpCtx ctx{this, cfg, tick_apps, tick_cats};
+    nfct_callback_register(h, NFCT_T_ALL, ct_cb, &ctx);
+    uint32_t family = AF_INET;
+    if (nfct_query(h, NFCT_Q_DUMP, &family) < 0)
+        nd_printf("%s: nfct_query failed: %s\n", GetTag().c_str(), strerror(errno));
+    nfct_close(h);
+}
+
+void nspPlugin::ProcessCtEntry(
+    struct nf_conntrack *ct,
+    const nsp::Config &cfg,
+    std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_apps,
+    std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_cats)
+{
+    // IPv4 only; skip if byte counters unavailable (needs CONFIG_NF_CT_ACCT=y).
+    if (!nfct_attr_is_set(ct, ATTR_ORIG_IPV4_SRC)) return;
+    if (!nfct_attr_is_set(ct, ATTR_ORIG_COUNTER_BYTES)) return;
+
+    // ── Build lookup key ─────────────────────────────────────────────────────
+    ConntrackKey ck;
+    ck.proto = nfct_get_attr_u8(ct, ATTR_PROTO_NUM);
+
+    struct in_addr a;
+    a.s_addr = nfct_get_attr_u32(ct, ATTR_ORIG_IPV4_SRC);
+    ck.orig_src_ip = inet_ntoa(a);
+    a.s_addr = nfct_get_attr_u32(ct, ATTR_ORIG_IPV4_DST);
+    ck.orig_dst_ip = inet_ntoa(a);
+
+    ck.orig_sport = nfct_attr_is_set(ct, ATTR_ORIG_PORT_SRC)
+        ? ntohs(nfct_get_attr_u16(ct, ATTR_ORIG_PORT_SRC)) : 0;
+    ck.orig_dport = nfct_attr_is_set(ct, ATTR_ORIG_PORT_DST)
+        ? ntohs(nfct_get_attr_u16(ct, ATTR_ORIG_PORT_DST)) : 0;
+
+    uint64_t orig_bytes = nfct_get_attr_u64(ct, ATTR_ORIG_COUNTER_BYTES);
+    uint64_t repl_bytes = nfct_attr_is_set(ct, ATTR_REPL_COUNTER_BYTES)
+        ? nfct_get_attr_u64(ct, ATTR_REPL_COUNTER_BYTES) : 0;
+
+    uint32_t repl_dst_nbo = nfct_attr_is_set(ct, ATTR_REPL_IPV4_DST)
+        ? nfct_get_attr_u32(ct, ATTR_REPL_IPV4_DST) : 0;
+
+    // ── Delta + classification (under ct_mutex_) ─────────────────────────────
+    uint64_t delta_orig = 0, delta_repl = 0;
+    std::string app_name, cat_name, client_ip, client_mac, iface_name;
+    bool nat_flow = false;
+    std::string wan_ip, wan_key;
+
+    {
+        lock_guard<mutex> lg(ct_mutex_);
+
+        auto &snap    = ct_snap_[ck];
+        delta_orig = orig_bytes >= snap.orig_bytes ? orig_bytes - snap.orig_bytes : orig_bytes;
+        delta_repl = repl_bytes >= snap.repl_bytes ? repl_bytes - snap.repl_bytes : repl_bytes;
+        snap.orig_bytes = orig_bytes;
+        snap.repl_bytes = repl_bytes;
+
+        auto it = ct_flow_map_.find(ck);
+        if (it != ct_flow_map_.end()) {
+            app_name   = it->second.app_name;
+            cat_name   = it->second.cat_name;
+            client_ip  = it->second.client_ip;
+            client_mac = it->second.client_mac;
+            iface_name = it->second.iface_name;
+            if (client_mac.empty() && mac_map_.count(client_ip))
+                client_mac = mac_map_.at(client_ip);
+        } else {
+            app_name = cat_name = "Unidentified";
+            struct in_addr sa; sa.s_addr = nfct_get_attr_u32(ct, ATTR_ORIG_IPV4_SRC);
+            client_ip  = inet_ntoa(sa);
+            client_mac = mac_map_.count(client_ip) ? mac_map_.at(client_ip) : "";
+        }
+
+        uint32_t orig_src_nbo = nfct_get_attr_u32(ct, ATTR_ORIG_IPV4_SRC);
+        nat_flow = (repl_dst_nbo != 0 && repl_dst_nbo != orig_src_nbo);
+        if (nat_flow) {
+            struct in_addr wa; wa.s_addr = repl_dst_nbo;
+            wan_ip  = inet_ntoa(wa);
+            wan_key = mac_map_.count(wan_ip) ? mac_map_.at(wan_ip) : wan_ip;
+        }
+    }
+
+    if (delta_orig == 0 && delta_repl == 0) return;
+
+    const uint64_t client_tx = delta_orig;  // client→server
+    const uint64_t client_rx = delta_repl;  // server→client
+
+    // ── Ring buffer tick buckets ──────────────────────────────────────────────
+    if (!iface_name.empty()) {
+        tick_apps[iface_name][app_name].tx_bytes += client_tx;
+        tick_apps[iface_name][app_name].rx_bytes += client_rx;
+        tick_cats[iface_name][cat_name].tx_bytes += client_tx;
+        tick_cats[iface_name][cat_name].rx_bytes += client_rx;
+    }
+    if (nat_flow) {
+        for (const auto &iface : cfg.monitor_ifs) {
+            if (iface == iface_name) continue;
+            tick_apps[iface][app_name].tx_bytes += client_tx;
+            tick_apps[iface][app_name].rx_bytes += client_rx;
+            tick_cats[iface][cat_name].tx_bytes += client_tx;
+            tick_cats[iface][cat_name].rx_bytes += client_rx;
+        }
+    }
+
+    // ── Live layer ────────────────────────────────────────────────────────────
+    {
+        lock_guard<mutex> llg(live_mutex_);
+
+        if (!iface_name.empty()) {
+            live_iface_[iface_name].apps[app_name].rx_bytes += client_rx;
+            live_iface_[iface_name].apps[app_name].tx_bytes += client_tx;
+            live_iface_[iface_name].cats[cat_name].rx_bytes += client_rx;
+            live_iface_[iface_name].cats[cat_name].tx_bytes += client_tx;
+        }
+
+        const std::string &host_key = client_mac.empty() ? client_ip : client_mac;
+        if (!host_key.empty()) {
+            auto &h = live_hosts_[host_key];
+            h.ip = client_ip;
+            h.apps[app_name].rx_bytes += client_rx;
+            h.apps[app_name].tx_bytes += client_tx;
+            h.total.rx_bytes += client_rx;
+            h.total.tx_bytes += client_tx;
+        }
+
+        if (nat_flow && !wan_key.empty()) {
+            auto &wh = live_hosts_[wan_key];
+            wh.ip = wan_ip;
+            wh.apps[app_name].rx_bytes += client_rx;
+            wh.apps[app_name].tx_bytes += client_tx;
+            wh.total.rx_bytes += client_rx;
+            wh.total.tx_bytes += client_tx;
+        }
+    }
+}
+
 void nspPlugin::ProcessEvent(ndPluginEvent event, void *) {
     if (event == ndPlugin::EVENT_RELOAD) reload_pending = true;
 }
