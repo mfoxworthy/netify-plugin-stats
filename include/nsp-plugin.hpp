@@ -95,6 +95,41 @@ struct LiveIfaceEntry {
     std::map<std::string, LiveMetrics> cats;   // cat_name → metrics
 };
 
+// ── Conntrack accounting ──────────────────────────────────────────────────────
+
+struct nf_conntrack;  // forward declaration — full type in nsp-plugin.cpp only
+
+// 5-tuple key for correlating netifyd flows with conntrack entries.
+struct ConntrackKey {
+    uint8_t     proto      = 0;
+    std::string orig_src_ip;
+    std::string orig_dst_ip;
+    uint16_t    orig_sport = 0;
+    uint16_t    orig_dport = 0;
+    bool operator<(const ConntrackKey &o) const {
+        if (proto       != o.proto)       return proto       < o.proto;
+        if (orig_src_ip != o.orig_src_ip) return orig_src_ip < o.orig_src_ip;
+        if (orig_dst_ip != o.orig_dst_ip) return orig_dst_ip < o.orig_dst_ip;
+        if (orig_sport  != o.orig_sport)  return orig_sport  < o.orig_sport;
+        return orig_dport < o.orig_dport;
+    }
+};
+
+// DPI classification for a flow (populated by ProcessFlow events).
+struct FlowClass {
+    std::string app_name;
+    std::string cat_name;
+    std::string client_ip;
+    std::string client_mac;
+    std::string iface_name;
+};
+
+// Last-seen conntrack byte counts for delta computation.
+struct ConntrackSnap {
+    uint64_t orig_bytes = 0;
+    uint64_t repl_bytes = 0;
+};
+
 class nspPlugin : public ndPluginDetection {
 public:
     nspPlugin(const string &tag);
@@ -128,6 +163,23 @@ protected:
     std::map<uint64_t,     LiveSnap>        live_flow_snap_;  // flow_id → cumulative snapshot
     time_t  live_start_ = 0;
     mutex   live_mutex_;
+
+    // Conntrack-based byte accounting
+    std::map<ConntrackKey, FlowClass>     ct_flow_map_;
+    std::map<ConntrackKey, ConntrackSnap> ct_snap_;
+    std::map<std::string, std::string>    mac_map_;   // IP → MAC
+    mutex ct_mutex_;
+
+    void ReadArpTable();
+    void ConntrackDump(
+        const nsp::Config &cfg,
+        std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_apps,
+        std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_cats);
+    void ProcessCtEntry(
+        struct nf_conntrack *ct,
+        const nsp::Config &cfg,
+        std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_apps,
+        std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_cats);
 
     static void WriteLiveJson(
         const std::map<std::string, LiveIfaceEntry> &iface_data,
