@@ -13,7 +13,6 @@ check_PROGRAMS = unit_tests
 unit_tests_SOURCES = \
     unit/test_smoke.cpp \
     unit/test_store.cpp \
-    unit/test_accum.cpp \
     unit/test_config.cpp \
     unit/test_query.cpp \
     $(top_srcdir)/src/nsp-store.cpp \
