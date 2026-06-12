@@ -128,6 +128,8 @@ struct FlowClass {
 struct ConntrackSnap {
     uint64_t orig_bytes = 0;
     uint64_t repl_bytes = 0;
+    uint64_t orig_pkts  = 0;
+    uint64_t repl_pkts  = 0;
 };
 
 class nspPlugin : public ndPluginDetection {

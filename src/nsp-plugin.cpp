@@ -245,12 +245,17 @@ void nspPlugin::ProcessCtEntry(
     uint64_t orig_bytes = nfct_get_attr_u64(ct, ATTR_ORIG_COUNTER_BYTES);
     uint64_t repl_bytes = nfct_attr_is_set(ct, ATTR_REPL_COUNTER_BYTES)
         ? nfct_get_attr_u64(ct, ATTR_REPL_COUNTER_BYTES) : 0;
+    uint64_t orig_pkts = nfct_attr_is_set(ct, ATTR_ORIG_COUNTER_PACKETS)
+        ? nfct_get_attr_u64(ct, ATTR_ORIG_COUNTER_PACKETS) : 0;
+    uint64_t repl_pkts = nfct_attr_is_set(ct, ATTR_REPL_COUNTER_PACKETS)
+        ? nfct_get_attr_u64(ct, ATTR_REPL_COUNTER_PACKETS) : 0;
 
     uint32_t repl_dst_nbo = nfct_attr_is_set(ct, ATTR_REPL_IPV4_DST)
         ? nfct_get_attr_u32(ct, ATTR_REPL_IPV4_DST) : 0;
 
     // ── Delta + classification (under ct_mutex_) ─────────────────────────────
     uint64_t delta_orig = 0, delta_repl = 0;
+    uint64_t delta_orig_pkts = 0, delta_repl_pkts = 0;
     std::string app_name, cat_name, client_ip, client_mac, iface_name;
     bool nat_flow = false;
     std::string wan_ip;
@@ -264,8 +269,12 @@ void nspPlugin::ProcessCtEntry(
         auto &snap    = ct_snap_[ck];
         delta_orig = orig_bytes >= snap.orig_bytes ? orig_bytes - snap.orig_bytes : orig_bytes;
         delta_repl = repl_bytes >= snap.repl_bytes ? repl_bytes - snap.repl_bytes : repl_bytes;
+        delta_orig_pkts = orig_pkts >= snap.orig_pkts ? orig_pkts - snap.orig_pkts : orig_pkts;
+        delta_repl_pkts = repl_pkts >= snap.repl_pkts ? repl_pkts - snap.repl_pkts : repl_pkts;
         snap.orig_bytes = orig_bytes;
         snap.repl_bytes = repl_bytes;
+        snap.orig_pkts  = orig_pkts;
+        snap.repl_pkts  = repl_pkts;
 
         auto it = ct_flow_map_.find(ck);
         if (it != ct_flow_map_.end()) {
@@ -293,8 +302,10 @@ void nspPlugin::ProcessCtEntry(
 
     if (delta_orig == 0 && delta_repl == 0) return;
 
-    const uint64_t client_tx = delta_orig;  // client→server
-    const uint64_t client_rx = delta_repl;  // server→client
+    const uint64_t client_tx      = delta_orig;       // client→server bytes
+    const uint64_t client_rx      = delta_repl;       // server→client bytes
+    const uint32_t client_tx_pkts = (uint32_t)delta_orig_pkts;
+    const uint32_t client_rx_pkts = (uint32_t)delta_repl_pkts;
 
     // Resolve which monitored WAN interface this NATted flow used.
     // wan_ip is ATTR_REPL_IPV4_DST — the router's external IP used by MASQUERADE.
@@ -309,21 +320,23 @@ void nspPlugin::ProcessCtEntry(
 
     // ── Ring buffer tick buckets ──────────────────────────────────────────────
     if (!iface_name.empty()) {
-        tick_apps[iface_name][app_name].tx_bytes += client_tx;
-        tick_apps[iface_name][app_name].rx_bytes += client_rx;
-        tick_cats[iface_name][cat_name].tx_bytes += client_tx;
-        tick_cats[iface_name][cat_name].rx_bytes += client_rx;
-        if (is_new_flow) {
-            tick_apps[iface_name][app_name].flows += 1;
-            tick_cats[iface_name][cat_name].flows += 1;
-        }
+        auto &ta = tick_apps[iface_name][app_name];
+        auto &tc = tick_cats[iface_name][cat_name];
+        ta.tx_bytes += client_tx;   ta.rx_bytes += client_rx;
+        ta.tx_pkts  += client_tx_pkts; ta.rx_pkts += client_rx_pkts;
+        tc.tx_bytes += client_tx;   tc.rx_bytes += client_rx;
+        tc.tx_pkts  += client_tx_pkts; tc.rx_pkts += client_rx_pkts;
+        if (is_new_flow) { ta.flows += 1; tc.flows += 1; }
     }
     // Also count on the specific WAN interface that carried this NATted flow.
     if (!wan_iface.empty()) {
-        tick_apps[wan_iface][app_name].tx_bytes += client_tx;
-        tick_apps[wan_iface][app_name].rx_bytes += client_rx;
-        tick_cats[wan_iface][cat_name].tx_bytes += client_tx;
-        tick_cats[wan_iface][cat_name].rx_bytes += client_rx;
+        auto &ta = tick_apps[wan_iface][app_name];
+        auto &tc = tick_cats[wan_iface][cat_name];
+        ta.tx_bytes += client_tx;   ta.rx_bytes += client_rx;
+        ta.tx_pkts  += client_tx_pkts; ta.rx_pkts += client_rx_pkts;
+        tc.tx_bytes += client_tx;   tc.rx_bytes += client_rx;
+        tc.tx_pkts  += client_tx_pkts; tc.rx_pkts += client_rx_pkts;
+        if (is_new_flow) { ta.flows += 1; tc.flows += 1; }
     }
 
     // ── Live layer ────────────────────────────────────────────────────────────
