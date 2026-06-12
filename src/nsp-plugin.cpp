@@ -147,6 +147,7 @@ void nspPlugin::LoadCategoryNames(const std::string &path) {
 }
 
 std::string nspPlugin::CategoryName(unsigned cat_id) {
+    if (cat_id == 0) return "Unidentified";
     lock_guard<mutex> lg(config_mutex);
     auto it = cat_names.find(cat_id);
     return (it != cat_names.end()) ? it->second : ("cat-" + std::to_string(cat_id));
@@ -358,9 +359,13 @@ void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
         // Derive names needed by the live layer.
         // CategoryName() takes config_mutex — call before any other lock.
         unsigned app_id  = (unsigned)flow->detected_application;
-        std::string app_name = (flow->detected_application_name != NULL && flow->detected_application_name[0] != '\0')
-                               ? flow->detected_application_name
-                               : ("app-" + std::to_string(app_id));
+        std::string app_name;
+        if (flow->detected_application_name != NULL && flow->detected_application_name[0] != '\0')
+            app_name = flow->detected_application_name;
+        else if (app_id == 0)
+            app_name = "Unidentified";
+        else
+            app_name = "app-" + std::to_string(app_id);
         std::string cat_name  = CategoryName((unsigned)flow->category.application);
         std::string iface_name = flow->iface.ifname;
 
