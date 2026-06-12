@@ -105,21 +105,41 @@ uint64_t nspPlugin::FlowKey(ndFlow *flow) {
 
 void nspPlugin::LoadCategoryNames(const std::string &path) {
     std::unordered_map<unsigned, std::string> names;
-    std::ifstream f(path);
-    if (f.is_open()) {
+
+    auto try_load = [&](const std::string &fpath, const char *key, bool primary) {
+        std::ifstream f(fpath);
+        if (!f.is_open()) {
+            if (primary)
+                nd_printf("%s: categories file not found: %s\n", GetTag().c_str(), fpath.c_str());
+            return;
+        }
         try {
             auto j = json::parse(f);
-            for (auto it = j.at("application_tag_index").begin();
-                 it != j.at("application_tag_index").end(); ++it)
-                names[(unsigned)it.value()] = it.key();
+            if (!j.contains(key)) return;
+            size_t added = 0;
+            for (auto it = j.at(key).begin(); it != j.at(key).end(); ++it) {
+                // Primary: overwrite; supplementary: fill gaps only
+                if (primary)
+                    names[(unsigned)it.value()] = it.key();
+                else
+                    names.emplace((unsigned)it.value(), it.key());
+                ++added;
+            }
             nd_printf("%s: loaded %zu category names from %s\n",
-                GetTag().c_str(), names.size(), path.c_str());
+                GetTag().c_str(), added, fpath.c_str());
         } catch (const std::exception &e) {
-            nd_printf("%s: failed to parse %s: %s\n", GetTag().c_str(), path.c_str(), e.what());
+            nd_printf("%s: failed to parse %s: %s\n", GetTag().c_str(), fpath.c_str(), e.what());
         }
-    } else {
-        nd_printf("%s: categories file not found: %s\n", GetTag().c_str(), path.c_str());
-    }
+    };
+
+    // Primary source: netifyd-managed netify-categories.json
+    try_load(path, "application_tag_index", true);
+
+    // Supplementary: fresh data downloaded by netify-plugin-fwa (daily refresh)
+    static const char *FWA_APP_PROTO = "/etc/netify.d/netify-fwa-app-proto.json";
+    if (path != FWA_APP_PROTO)
+        try_load(FWA_APP_PROTO, "application_category_tags", false);
+
     lock_guard<mutex> lg(config_mutex);
     cat_names = std::move(names);
 }
@@ -261,15 +281,6 @@ void nspPlugin::ProcessCtEntry(
         tick_apps[iface_name][app_name].rx_bytes += client_rx;
         tick_cats[iface_name][cat_name].tx_bytes += client_tx;
         tick_cats[iface_name][cat_name].rx_bytes += client_rx;
-    }
-    if (nat_flow) {
-        for (const auto &iface : cfg.monitor_ifs) {
-            if (iface == iface_name) continue;
-            tick_apps[iface][app_name].tx_bytes += client_tx;
-            tick_apps[iface][app_name].rx_bytes += client_rx;
-            tick_cats[iface][cat_name].tx_bytes += client_tx;
-            tick_cats[iface][cat_name].rx_bytes += client_rx;
-        }
     }
 
     // ── Live layer ────────────────────────────────────────────────────────────
