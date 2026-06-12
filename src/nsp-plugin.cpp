@@ -425,9 +425,13 @@ void nspPlugin::ProcessFlow(ndDetectionEvent event, ndFlow *flow) {
 
     uint64_t flow_id = FlowKey(flow);
     unsigned app_id  = (unsigned)flow->detected_application;
-    std::string app_name = (flow->detected_application_name != NULL && flow->detected_application_name[0] != '\0')
-                           ? flow->detected_application_name
-                           : ("app-" + std::to_string(app_id));
+    std::string app_name;
+    if (flow->detected_application_name != NULL && flow->detected_application_name[0] != '\0')
+        app_name = flow->detected_application_name;
+    else if (app_id == 0)
+        app_name = "Unidentified";
+    else
+        app_name = "app-" + std::to_string(app_id);
     std::string cat_name = CategoryName((unsigned)flow->category.application);
     // CategoryName() takes config_mutex briefly; must be called OUTSIDE ifaces_mutex and live_mutex_.
 
