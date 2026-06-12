@@ -255,9 +255,12 @@ void nspPlugin::ProcessCtEntry(
     bool nat_flow = false;
     std::string wan_ip;
 
+    bool is_new_flow = false;
+
     {
         lock_guard<mutex> lg(ct_mutex_);
 
+        is_new_flow = (ct_snap_.count(ck) == 0);
         auto &snap    = ct_snap_[ck];
         delta_orig = orig_bytes >= snap.orig_bytes ? orig_bytes - snap.orig_bytes : orig_bytes;
         delta_repl = repl_bytes >= snap.repl_bytes ? repl_bytes - snap.repl_bytes : repl_bytes;
@@ -310,6 +313,10 @@ void nspPlugin::ProcessCtEntry(
         tick_apps[iface_name][app_name].rx_bytes += client_rx;
         tick_cats[iface_name][cat_name].tx_bytes += client_tx;
         tick_cats[iface_name][cat_name].rx_bytes += client_rx;
+        if (is_new_flow) {
+            tick_apps[iface_name][app_name].flows += 1;
+            tick_cats[iface_name][cat_name].flows += 1;
+        }
     }
     // Also count on the specific WAN interface that carried this NATted flow.
     if (!wan_iface.empty()) {
