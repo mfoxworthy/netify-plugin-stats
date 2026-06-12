@@ -174,7 +174,13 @@ protected:
     std::map<std::string, std::string>    mac_map_;   // IP → MAC
     mutex ct_mutex_;
 
+    // Interface IP map for WAN attribution: router IP → iface name.
+    // Keyed by IPv4 string; built from getifaddrs() at reload and each tick.
+    std::unordered_map<std::string, std::string> iface_ip_;
+    mutex iface_ip_mutex_;
+
     void ReadArpTable();
+    void RefreshIfaceIPs();
     void ConntrackDump(
         const nsp::Config &cfg,
         std::map<std::string, std::map<std::string, nsp::Metrics>> &tick_apps,

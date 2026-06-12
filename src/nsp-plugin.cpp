@@ -3,6 +3,7 @@
 #endif
 
 #include <arpa/inet.h>
+#include <ifaddrs.h>
 #include <chrono>
 #include <cstring>
 #include <ctime>
@@ -45,6 +46,7 @@ void nspPlugin::Reload() {
     }
     OpenStores();
     LoadCategoryNames(config.categories_path);
+    RefreshIfaceIPs();
     nd_printf("%s: loaded config; store_path=%s top_n=%u interval=%us\n",
         GetTag().c_str(), config.store_path.c_str(), config.top_n_apps, config.sample_interval);
 }
@@ -165,6 +167,22 @@ void nspPlugin::ReadArpTable() {
     }
 }
 
+void nspPlugin::RefreshIfaceIPs() {
+    struct ifaddrs *ifa_list = nullptr;
+    if (getifaddrs(&ifa_list) != 0) return;
+    std::unordered_map<std::string, std::string> new_map;
+    for (auto *ifa = ifa_list; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+        char ip[INET_ADDRSTRLEN];
+        auto *sa = reinterpret_cast<struct sockaddr_in *>(ifa->ifa_addr);
+        inet_ntop(AF_INET, &sa->sin_addr, ip, sizeof(ip));
+        new_map[ip] = ifa->ifa_name;
+    }
+    freeifaddrs(ifa_list);
+    lock_guard<mutex> lg(iface_ip_mutex_);
+    iface_ip_ = std::move(new_map);
+}
+
 // Context struct passed to the nfct C callback.
 struct CtDumpCtx {
     nspPlugin *self;
@@ -234,7 +252,7 @@ void nspPlugin::ProcessCtEntry(
     uint64_t delta_orig = 0, delta_repl = 0;
     std::string app_name, cat_name, client_ip, client_mac, iface_name;
     bool nat_flow = false;
-    std::string wan_ip, wan_key;
+    std::string wan_ip;
 
     {
         lock_guard<mutex> lg(ct_mutex_);
@@ -265,8 +283,7 @@ void nspPlugin::ProcessCtEntry(
         nat_flow = (repl_dst_nbo != 0 && repl_dst_nbo != orig_src_nbo);
         if (nat_flow) {
             struct in_addr wa; wa.s_addr = repl_dst_nbo;
-            wan_ip  = inet_ntoa(wa);
-            wan_key = mac_map_.count(wan_ip) ? mac_map_.at(wan_ip) : wan_ip;
+            wan_ip = inet_ntoa(wa);
         }
     }
 
@@ -275,12 +292,30 @@ void nspPlugin::ProcessCtEntry(
     const uint64_t client_tx = delta_orig;  // client→server
     const uint64_t client_rx = delta_repl;  // server→client
 
+    // Resolve which monitored WAN interface this NATted flow used.
+    // wan_ip is ATTR_REPL_IPV4_DST — the router's external IP used by MASQUERADE.
+    // iface_ip_ maps each router IP to its interface name (refreshed each tick).
+    std::string wan_iface;
+    if (nat_flow && !wan_ip.empty()) {
+        lock_guard<mutex> ig(iface_ip_mutex_);
+        auto it = iface_ip_.find(wan_ip);
+        if (it != iface_ip_.end() && it->second != iface_name)
+            wan_iface = it->second;
+    }
+
     // ── Ring buffer tick buckets ──────────────────────────────────────────────
     if (!iface_name.empty()) {
         tick_apps[iface_name][app_name].tx_bytes += client_tx;
         tick_apps[iface_name][app_name].rx_bytes += client_rx;
         tick_cats[iface_name][cat_name].tx_bytes += client_tx;
         tick_cats[iface_name][cat_name].rx_bytes += client_rx;
+    }
+    // Also count on the specific WAN interface that carried this NATted flow.
+    if (!wan_iface.empty()) {
+        tick_apps[wan_iface][app_name].tx_bytes += client_tx;
+        tick_apps[wan_iface][app_name].rx_bytes += client_rx;
+        tick_cats[wan_iface][cat_name].tx_bytes += client_tx;
+        tick_cats[wan_iface][cat_name].rx_bytes += client_rx;
     }
 
     // ── Live layer ────────────────────────────────────────────────────────────
@@ -293,6 +328,12 @@ void nspPlugin::ProcessCtEntry(
             live_iface_[iface_name].cats[cat_name].rx_bytes += client_rx;
             live_iface_[iface_name].cats[cat_name].tx_bytes += client_tx;
         }
+        if (!wan_iface.empty()) {
+            live_iface_[wan_iface].apps[app_name].rx_bytes += client_rx;
+            live_iface_[wan_iface].apps[app_name].tx_bytes += client_tx;
+            live_iface_[wan_iface].cats[cat_name].rx_bytes += client_rx;
+            live_iface_[wan_iface].cats[cat_name].tx_bytes += client_tx;
+        }
 
         const std::string &host_key = client_mac.empty() ? client_ip : client_mac;
         if (!host_key.empty()) {
@@ -302,15 +343,6 @@ void nspPlugin::ProcessCtEntry(
             h.apps[app_name].tx_bytes += client_tx;
             h.total.rx_bytes += client_rx;
             h.total.tx_bytes += client_tx;
-        }
-
-        if (nat_flow && !wan_key.empty()) {
-            auto &wh = live_hosts_[wan_key];
-            wh.ip = wan_ip;
-            wh.apps[app_name].rx_bytes += client_rx;
-            wh.apps[app_name].tx_bytes += client_tx;
-            wh.total.rx_bytes += client_rx;
-            wh.total.tx_bytes += client_tx;
         }
     }
 }
@@ -509,8 +541,9 @@ void *nspPlugin::Entry(void) {
 
         int64_t epoch = (int64_t)time(nullptr);
 
-        // Update ARP table then poll conntrack for per-tick byte deltas.
+        // Update ARP and interface-IP tables, then poll conntrack.
         ReadArpTable();
+        RefreshIfaceIPs();
         std::map<std::string, std::map<std::string, nsp::Metrics>> tick_apps, tick_cats;
         ConntrackDump(cfg, tick_apps, tick_cats);
 
